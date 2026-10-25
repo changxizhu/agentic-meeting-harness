@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date
 import json
 import os
 from pathlib import Path
@@ -10,29 +9,16 @@ import subprocess
 import sys
 
 from .ingest import HarnessError, latest_source, make_bundle
+from .naming import DEFAULT_REPORT_TITLE, REFERENCE_SUFFIX, report_basename, validate_report_title
 from .prompts import build_prompt, schema_for
 from .review import (artifact_hash, render_concise_markdown, render_markdown, validate_agenda, validate_brief,
                      validate_bundle, validate_concise, validate_coverage, validate_discussion)
 
 STAGES = ('discussion', 'coverage_review', 'brief', 'concise', 'agenda')
-DEFAULT_REPORT_TITLE = 'learning group [catch-up]'
-REFERENCE_SUFFIX = ' [with references]'
 
 
 def dump(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
-
-
-def validate_report_title(value: object) -> str:
-    """Accept one literal filename label from trusted settings or an argument."""
-    if (not isinstance(value, str) or not value or value != value.strip()
-            or value in ('.', '..') or value.endswith('.')
-            or any(not char.isprintable() or char in '/\\<>:"|?*' for char in value)
-            or value.lower().endswith(('_with_references', REFERENCE_SUFFIX))):
-        raise HarnessError('Report title must be a nonempty filename-safe label without path separators, control characters, or a reference suffix.')
-    if len(('2000-01-01 ' + value + REFERENCE_SUFFIX + '.md').encode('utf-8')) > 255:
-        raise HarnessError('Report title is too long for the complete dated filename; choose a shorter title. It will not be truncated.')
-    return value
 
 
 def resolve_report_title(explicit: str | None, anchor: Path) -> str:
@@ -53,13 +39,7 @@ def resolve_report_title(explicit: str | None, anchor: Path) -> str:
 
 
 def dated_report_path(directory: Path, bundle: dict, title: str) -> Path:
-    recorded = bundle.get('meeting', {}).get('date')
-    try:
-        if not isinstance(recorded, str) or date.fromisoformat(recorded).isoformat() != recorded:
-            raise ValueError()
-    except ValueError as exc:
-        raise HarnessError('A known meeting date is required for reports. Prepare or run the source with --meeting-date YYYY-MM-DD; the current date is never substituted.') from exc
-    return directory / f'{recorded} {validate_report_title(title)}.md'
+    return directory / f'{report_basename(bundle, title)}.md'
 
 
 def private_destination(path: Path) -> Path:
@@ -276,8 +256,10 @@ def run_model(args) -> None:
                                  lambda x: validate_agenda(x, discussion, brief, bundle))
         write_private(out / 'agenda.json', dump(agenda))
         reports = write_report_pair(dated_report_path(out, bundle, report_title),
-                                    render_concise_markdown(discussion, coverage, brief, agenda, bundle, concise),
-                                    render_markdown(discussion, coverage, brief, agenda, bundle))
+                                    render_concise_markdown(discussion, coverage, brief, agenda, bundle, concise,
+                                                            report_title=report_title),
+                                    render_markdown(discussion, coverage, brief, agenda, bundle,
+                                                    report_title=report_title))
         write_private(out / 'receipt.json', dump({'schema_version': 2, 'status': 'ordered_workflow_completed',
                       'source_sha256': bundle['meeting']['source_sha256'], 'discussion_sha256': artifact_hash(discussion),
                       'concise_sha256': artifact_hash(concise),
@@ -302,7 +284,7 @@ def parser():
         p.add_argument('--out', type=Path, required=True)
         p.add_argument('--language', choices=('en', 'zh'), default='zh')
         if action == 'run':
-            p.add_argument('--report-title', help='Trusted filename label; defaults to nearest local report-naming settings, then a generic label.')
+            p.add_argument('--report-title', help='Trusted label for both dated filenames and report headings; defaults to nearest local report-naming settings, then a generic label.')
             p.add_argument('--command-json', required=True)
             p.add_argument('--attempts', type=int, choices=range(1, 4), default=2)
             p.add_argument('--timeout', type=int, default=300)
@@ -319,7 +301,7 @@ def parser():
             p.add_argument('--out', type=Path, required=True,
                            help='For render: output folder for dated reports, or an explicit concise .md filename; its reference companion is always created beside it.')
         if action == 'render':
-            p.add_argument('--report-title', help='Trusted filename label for dated output folders; never taken from transcript text.')
+            p.add_argument('--report-title', help='Trusted label for both report headings and dated output folders, including when --out is an explicit filename; never taken from transcript text.')
     return root
 
 
@@ -341,14 +323,16 @@ def main(argv=None) -> int:
                 write_private(private_destination(args.out), content)
                 print('Prompt created after checking the required prior stages.')
             elif args.action == 'render':
+                title = resolve_report_title(args.report_title, args.bundle)
                 if args.out.suffix.lower() == '.md' and not args.out.is_dir():
                     report_path = args.out
                 else:
-                    title = resolve_report_title(args.report_title, args.bundle)
                     report_path = dated_report_path(args.out, bundle, title)
                 reports = write_report_pair(report_path,
-                                            render_concise_markdown(discussion, coverage, brief, agenda, bundle, concise),
-                                            render_markdown(discussion, coverage, brief, agenda, bundle))
+                                            render_concise_markdown(discussion, coverage, brief, agenda, bundle, concise,
+                                                                    report_title=title),
+                                            render_markdown(discussion, coverage, brief, agenda, bundle,
+                                                            report_title=title))
                 print(f'Both reports rendered: {reports[0].name} (concise) and {reports[1].name} (with source references).')
             else:
                 print('Stage order, complete source mapping, discussion links, exact evidence and agenda provenance passed structural checks.')

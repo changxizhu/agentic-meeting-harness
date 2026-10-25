@@ -103,6 +103,8 @@ def latest_source(folder: Path) -> Path:
                         and not (p.suffix.lower() == ".md" and
                                  any(p.with_name(p.stem + suffix).is_file()
                                      for suffix in ("_with_references.md", " [with references].md")))
+                        and not any(part.casefold() == "resources"
+                                    for part in p.relative_to(folder).parts[:-1])
                         and not any(part.startswith(".") for part in p.relative_to(folder).parts)
                         and not p.name.startswith("~$"))
     if not candidates:

@@ -101,6 +101,34 @@ class IngestionWorkflowTests(unittest.TestCase):
         self.source("~$2026-12-31-locked.docx", "Not a real document")
         self.assertEqual(latest_source(self.folder), newest)
 
+    def test_undated_shared_resource_does_not_block_latest_meeting(self) -> None:
+        newest = self.source("2026-10-21/transcript.txt",
+                             "Fictional review\nDate: 2026-10-21\nAlice: Hello.\n")
+        self.source("resources/Journal-README.md",
+                    "# Fictional Journal\nShared project instructions, not a meeting.\n")
+        self.assertEqual(latest_source(self.folder), newest)
+
+    def test_nested_resource_directories_are_ignored_case_insensitively(self) -> None:
+        newest = self.source("2026-10-21/transcript.txt",
+                             "Fictional review\nDate: 2026-10-21\nAlice: Hello.\n")
+        self.source("nested/ReSoUrCeS/presentations/2026-12-31-notes.md",
+                    "Fictional presentation notes\nAlice: Not a meeting transcript.\n")
+        resource = self.folder / "2026-10-21/RESOURCES/nested/2027-01-01-example.docx"
+        resource.parent.mkdir(parents=True)
+        with ZipFile(resource, "w") as archive:
+            archive.writestr("word/document.xml", '''
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body><w:p><w:r><w:t>Fictional resource document</w:t></w:r></w:p></w:body>
+</w:document>''')
+        self.assertEqual(latest_source(self.folder), newest)
+
+    def test_markdown_transcript_outside_resources_is_still_selected(self) -> None:
+        self.source("2026-10-18/transcript.txt", "Earlier fictional meeting\nDate: 2026-10-18\n")
+        self.source("resources/2027-01-01-later.md", "Dated fictional resource\n")
+        newest = self.source("2026-10-21/original.md",
+                             "Newest fictional meeting\nDate: 2026-10-21\nAlice: Hello.\n")
+        self.assertEqual(latest_source(self.folder), newest)
+
     def test_adjacent_reports_and_hidden_run_files_do_not_compete_with_source(self) -> None:
         newest = self.source("2026-10-21/transcript.txt", "Fictional review\nDate: 2026-10-21\nAlice: Hello.\n")
         self.source("2026-10-21/summary.md", "Summary\nMeeting date: 2026-10-21\n")
@@ -309,6 +337,10 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertTrue((out / self.reference_name).is_file())
         self.assertNotIn(self.bundle['meeting']['title'], self.report_name)
         self.assertNotIn('summary.md', {p.name for p in out.iterdir()})
+        for name in (self.report_name, self.reference_name):
+            heading = (out / name).read_text().splitlines()[0]
+            self.assertEqual(heading, r'# 2026-01-15 learning group \[catch-up\]')
+            self.assertNotIn(self.bundle['meeting']['title'], heading)
 
     def test_run_reads_nearest_private_naming_settings_and_explicit_override_wins(self) -> None:
         setting = self.folder / '.harness' / 'report-naming.json'
@@ -327,10 +359,15 @@ class CommandWorkflowTests(unittest.TestCase):
         basename = '2026-01-15 Fictional local circle [weekly review]'
         self.assertTrue((out / (basename + '.md')).is_file())
         self.assertTrue((out / (basename + ' [with references].md')).is_file())
+        for name in (basename + '.md', basename + ' [with references].md'):
+            self.assertEqual((out / name).read_text().splitlines()[0],
+                             r'# 2026-01-15 Fictional local circle \[weekly review\]')
         closest.write_text(json.dumps({'report_title': '../unsafe'}))
         result, out, _ = self.run_adapter('override', extra=('--report-title', 'Fictional explicit title'))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((out / '2026-01-15 Fictional explicit title.md').is_file())
+        self.assertEqual((out / '2026-01-15 Fictional explicit title.md').read_text().splitlines()[0],
+                         '# 2026-01-15 Fictional explicit title')
 
     def test_invalid_naming_settings_fail_before_output_or_model_calls(self) -> None:
         setting = self.folder / '.harness' / 'report-naming.json'
@@ -382,6 +419,9 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         basename = '2026-01-15 Fictional research circle [monthly review]'
         self.assertEqual({p.name for p in out.iterdir()}, {basename + '.md', basename + ' [with references].md'})
+        for path in out.iterdir():
+            self.assertEqual(path.read_text().splitlines()[0],
+                             r'# 2026-01-15 Fictional research circle \[monthly review\]')
         override = self.folder / 'rendered-override'
         result = self.cli('render', *flags, '--out', override, '--report-title', 'Fictional explicit title')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -397,21 +437,43 @@ class CommandWorkflowTests(unittest.TestCase):
                 self.assertIn('concise Markdown filename', result.stderr)
                 self.assertFalse(out.exists())
 
+    def test_explicit_markdown_path_uses_trusted_settings_for_both_headings(self) -> None:
+        flags = self.artifact_flags()
+        setting = self.folder / '.harness' / 'report-naming.json'
+        setting.parent.mkdir()
+        setting.write_text(json.dumps({'report_title': 'Fictional study circle [weekly review]'}))
+        explicit = self.folder / 'custom-file.md'
+        result = self.cli('render', *flags, '--out', explicit)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for path in (explicit, explicit.with_name('custom-file [with references].md')):
+            heading = path.read_text().splitlines()[0]
+            self.assertEqual(heading, r'# 2026-01-15 Fictional study circle \[weekly review\]')
+            self.assertNotIn(self.bundle['meeting']['title'], heading)
+        setting.write_text(json.dumps({'report_title': '../unsafe'}))
+        rejected = self.folder / 'rejected-file.md'
+        result = self.cli('render', *flags, '--out', rejected)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('Report title', result.stderr)
+        self.assertFalse(rejected.exists())
+        override = self.folder / 'override-file.md'
+        result = self.cli('render', *flags, '--out', override, '--report-title', 'Fictional override')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for path in (override, override.with_name('override-file [with references].md')):
+            self.assertEqual(path.read_text().splitlines()[0], '# 2026-01-15 Fictional override')
+
     def test_explicit_markdown_path_preserves_legacy_undated_render_without_naming_settings(self) -> None:
         bundle = deepcopy(self.bundle)
         bundle['meeting']['date'] = None
         bundle['meeting']['date_basis'] = 'not_recorded'
         artifacts = fictional_artifacts(bundle)
         flags = self.artifact_flags(artifacts, bundle)
-        setting = self.folder / '.harness' / 'report-naming.json'
-        setting.parent.mkdir()
-        setting.write_text(json.dumps({'report_title': '../unsafe'}))
         explicit = self.folder / 'legacy-explicit.md'
         result = self.cli('render', *flags, '--out', explicit)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(explicit.is_file())
         self.assertTrue(explicit.with_name('legacy-explicit [with references].md').is_file())
-        setting.unlink()
+        for path in (explicit, explicit.with_name('legacy-explicit [with references].md')):
+            self.assertEqual(path.read_text().splitlines()[0], r'# Date unknown learning group \[catch-up\]')
         automatic = self.folder / 'undated-auto'
         result = self.cli('render', *flags, '--out', automatic)
         self.assertEqual(result.returncode, 2)

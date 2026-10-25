@@ -11,6 +11,8 @@ import hashlib
 import json
 import re
 
+from .naming import DEFAULT_REPORT_TITLE, report_basename
+
 
 def artifact_hash(artifact: object) -> str:
     """Bind a later stage to the exact JSON content of an earlier stage."""
@@ -526,7 +528,8 @@ def _md(value: str) -> str:
     return re.sub(r"([\\`*_{}\[\]<>#!|()])", r"\\\1", value).replace("\r\n", "\n").replace("\r", "\n")
 
 
-def render_markdown(discussion: dict, coverage: dict, brief: dict, agenda: dict, bundle: dict) -> str:
+def render_markdown(discussion: dict, coverage: dict, brief: dict, agenda: dict, bundle: dict,
+                    *, report_title: str = DEFAULT_REPORT_TITLE) -> str:
     """Render the full meeting first; agenda selection appears only afterwards."""
     errors = validate_brief(brief, discussion, coverage, bundle)
     errors.extend(validate_agenda(agenda, discussion, brief, bundle))
@@ -556,7 +559,7 @@ def render_markdown(discussion: dict, coverage: dict, brief: dict, agenda: dict,
     proposal_by_id = {item["id"]: item for topic in discussion["topics"] for item in topic["recorded_next_steps"]}
     kinds = {"question": "提问", "suggestion": "建议", "challenge": "质疑", "support": "支持", "clarification": "澄清", "addition": "补充", "response": "回应"}
     statuses = {"agreement": "形成共识", "partial_agreement": "局部共识", "answered": "问题得到回应", "open": "仍待讨论", "no_conclusion": "未形成结论"}
-    rows = [f"# {line(discussion['meeting']['title'])}", "", f"会议日期：{discussion['meeting']['date'] or '未记录'}", "", "## 完整会议讨论", ""]
+    rows = [f"# {line(report_basename(bundle, report_title, allow_unknown=True))}", "", f"会议日期：{discussion['meeting']['date'] or '未记录'}", "", "## 完整会议讨论", ""]
     for round_item in discussion["rounds"]:
         rows.extend([f"### {line(round_item['presenter'] or '未标注发言人')} 的分享", ""])
         for tid in round_item["topic_ids"]:
@@ -619,7 +622,7 @@ def render_markdown(discussion: dict, coverage: dict, brief: dict, agenda: dict,
 
 
 def render_concise_markdown(discussion: dict, coverage: dict, brief: dict, agenda: dict,
-                            bundle: dict, concise: dict) -> str:
+                            bundle: dict, concise: dict, *, report_title: str = DEFAULT_REPORT_TITLE) -> str:
     """Render only the independently compressed topic prose and final agenda.
 
     The complete brief remains the source for the reference edition. A separate
@@ -639,7 +642,7 @@ def render_concise_markdown(discussion: dict, coverage: dict, brief: dict, agend
 
     compressed = {item["id"]: item for item in concise["topics"]}
     proposals = {item["id"]: item for topic in discussion["topics"] for item in topic["recorded_next_steps"]}
-    rows = [f"# {line(discussion['meeting']['title'])}（精简版）", "",
+    rows = [f"# {line(report_basename(bundle, report_title, allow_unknown=True))}", "",
             f"会议日期：{discussion['meeting']['date'] or '未记录'}", ""]
     for round_item in discussion["rounds"]:
         rows.extend([f"## {speaker(round_item['presenter'])} 的分享", ""])

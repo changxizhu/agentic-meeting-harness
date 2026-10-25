@@ -3,6 +3,20 @@
 Keep all real meeting material and every derivative in the ignored local Meetings/
 folder (or outside this checkout). Group each original, finished summary, and hidden
 working records under Meetings/YYYY-MM-DD/. Never stage or publish this folder.
+Keep one date-only folder per meeting; do not nest exported wrapper folders or
+repeat the group name in directory names. Normalize originals to transcript.ext
+and clearly label imported historical summaries as previous-summary.pdf. A prior
+summary is not an original transcript and must not be represented as a freshly
+generated dual report. Keep undated or shared material in Meetings/resources/;
+exclude that directory from automatic source selection. Preserve original ZIPs
+under Meetings/.harness/archives/ and record original member names, destinations,
+file kinds and content hashes in a private import manifest. Skip exact duplicate
+extraction without discarding the preserved archive. Verify all moved/extracted
+bytes; never infer meeting dates from ZIP export times or file modification times.
+Within a meeting's hidden .harness/, group approved working records in current/
+and superseded reports, review attempts and earlier versions in history/. Preserve
+their contents when reorganizing; do not leave several apparent final versions
+beside the two visible reports. Keep the source bundle with the current artifacts.
 Use only clearly fictional examples in public tests, documentation, issues, and
 commits. Real participant names, quotations, transcripts, and summaries must never
 enter public files or Git history.
@@ -28,6 +42,11 @@ report `YYYY-MM-DD <report title>.md` and the detailed edition
 `YYYY-MM-DD <report title> [with references].md`. Use the verified meeting date,
 never today's date. Keep group-specific report titles in the ignored local
 Meetings/.harness/report-naming.json configuration, not public code or examples.
+Both reports must have the identical main body heading
+`YYYY-MM-DD <report title>`, matching the concise filename without its extension.
+Never use the original transcript filename/title as a report heading. Do not add
+an edition suffix to either heading; `[with references]` belongs only in the
+reference filename. Keep original source metadata and evidence unchanged.
 The concise report has no reference markers or source appendix; the detailed
 edition includes evidence and quotations.
 Both use the same reviewed discussion and final agenda. The reference edition

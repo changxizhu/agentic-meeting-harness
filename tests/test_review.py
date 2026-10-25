@@ -114,9 +114,9 @@ class ReviewTests(unittest.TestCase):
         self.bundle, self.discussion, self.coverage, self.brief, self.agenda = fixture()
         self.concise = concise_fixture(self.discussion, self.brief)
 
-    def render(self, renderer):
+    def render(self, renderer, **kwargs):
         args = (self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
-        return renderer(*args, self.concise) if renderer is render_concise_markdown else renderer(*args)
+        return renderer(*args, self.concise, **kwargs) if renderer is render_concise_markdown else renderer(*args, **kwargs)
 
     def errors(self):
         return validate_discussion(self.discussion, self.bundle)
@@ -489,6 +489,23 @@ class ReviewTests(unittest.TestCase):
         self.assertNotIn("T1.N1", rendered)
         self.assertIn("> I agree to track cost.", rendered)
 
+    def test_both_renderer_headings_use_date_and_generic_title_by_default(self):
+        headings = [self.render(renderer).splitlines()[0]
+                    for renderer in (render_markdown, render_concise_markdown)]
+        self.assertEqual(headings, [r"# 2026-01-12 learning group \[catch-up\]"] * 2)
+        for heading in headings:
+            self.assertNotIn(self.bundle["meeting"]["title"], heading)
+            self.assertNotIn("精简版", heading)
+            self.assertNotIn("with references", heading)
+
+    def test_both_renderer_headings_share_configured_title_without_mutating_source_metadata(self):
+        artifacts = (self.bundle, self.discussion, self.coverage, self.brief, self.concise, self.agenda)
+        original = [artifact_hash(value) for value in artifacts]
+        headings = [self.render(renderer, report_title="Fictional study circle [weekly review]").splitlines()[0]
+                    for renderer in (render_markdown, render_concise_markdown)]
+        self.assertEqual(headings, [r"# 2026-01-12 Fictional study circle \[weekly review\]"] * 2)
+        self.assertEqual([artifact_hash(value) for value in artifacts], original)
+
     def test_renderer_uses_compressed_text_and_original_attributions(self):
         self.brief["topics"][0]["discussion"][0]["summary"] = "A shorter question."
         self.agenda["brief_sha256"] = artifact_hash(self.brief)
@@ -599,7 +616,10 @@ class ReviewTests(unittest.TestCase):
         self.concise.update(discussion_sha256=artifact_hash(self.discussion), brief_sha256=artifact_hash(self.brief))
         for renderer in (render_markdown, render_concise_markdown):
             with self.subTest(renderer=renderer.__name__):
-                self.assertIn("会议日期：未记录", self.render(renderer))
+                rendered = self.render(renderer)
+                self.assertIn("会议日期：未记录", rendered)
+                self.assertEqual(rendered.splitlines()[0], r"# Date unknown learning group \[catch-up\]")
+                self.assertNotIn(self.bundle["meeting"]["title"], rendered.splitlines()[0])
 
     def test_arbitrary_malformed_inputs_fail_closed_without_raising(self):
         invalid = (None, [], False, 0, "bad", {}, {"schema_version": True})

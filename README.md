@@ -23,6 +23,8 @@ Every successful run or render produces both reports from the same reviewed disc
 
 Both preserve every topic in meeting order, the main attributed viewpoints and replies, outcomes, and unresolved questions. The detailed edition retains individual exchanges and supporting evidence; the concise edition synthesizes them into a few sentences per topic. Both finish with the same one-to-three next-discussion suggestions and distinguish recorded suggestions from the summarizer's extensions. Concision never permits dropping entire topics or changing meaning. A separate model stage writes `concise.json` after the detailed brief; removing citations from the full brief is not an accepted substitute.
 
+Both reports use the identical main body heading `YYYY-MM-DD <report title>`, matching the concise filename without `.md`. The original transcript name never supplies this heading. Edition labels belong in the filenames; neither heading adds a concise or reference suffix. Original source metadata remains unchanged in the private working records.
+
 ## Keep one manageable local folder
 
 Everything is managed inside `harness/`. Its code is public; `Meetings/` is local-only and excluded from Git:
@@ -31,20 +33,30 @@ Everything is managed inside `harness/`. Its code is public; `Meetings/` is loca
 harness/
   README.md                 project entry and usage
   Meetings/                 local-only originals and results
+    resources/              shared or undated decks, notes and policies
+    .harness/               private naming settings and import manifest
+      archives/             original imported ZIPs, retained unchanged
     YYYY-MM-DD/
-      transcript.docx       original meeting record
+      transcript.docx       original record, or transcript.pdf/.txt/.md
+      previous-summary.pdf  imported old summary, when available
       YYYY-MM-DD <report title>.md
                             concise report without references
       YYYY-MM-DD <report title> [with references].md
                             detailed report with source evidence
-      .harness/             hidden review records and old versions
+      .harness/
+        current/            approved bundle and working records
+        history/            earlier reports, attempts and versions
   meeting_harness/          program and workflow
   tests/                    fictional automated checks
   examples/                 fictional trial input and adapter
   tools/                    publication audit
 ```
 
-To read a result, open the dated Markdown report under `Meetings/<meeting-date>/`; the adjacent file ending in `[with references].md` contains the supporting evidence. The corresponding original is beside both reports. Review records and previous versions are kept inside that same meeting's hidden `.harness/` folder. No separate sibling material or output folders are needed.
+To read a result, open the dated Markdown report under `Meetings/<meeting-date>/`; the adjacent file ending in `[with references].md` contains the supporting evidence. The corresponding original is beside both reports. Keep approved working records together under that meeting's hidden `.harness/current/`, with the source bundle beside them. Superseded reports and review attempts belong in `.harness/history/`. No separate sibling material or output folders are needed.
+
+Use one date-only folder per meeting. Original filenames can be normalized to `transcript.<extension>` because the containing folder supplies the date. Keep generated report names in the requested full dated format so they remain identifiable when copied elsewhere. Do not preserve redundant ZIP wrapper folders or repeat the group title in directory names.
+
+During imports, distinguish original transcripts from historical summaries; store the latter as `previous-summary.pdf`, preserving their content. They are imported reference material, not freshly generated dual summaries or a replacement for source evidence. Keep undated and cross-meeting materials in `resources/` until their exact meeting association is established. Archive original ZIPs under `.harness/archives/`; a private import manifest records original member names, classifications, destinations and hashes. Verify the extracted bytes and deduplicate exact copies without losing the original archive. Document dates can establish grouping; export timestamps and file modification times cannot.
 
 Report names use the verified source meeting date plus a group title and meeting label, for example `2026-01-15 Fictional learning group [weekly catch-up].md`. The reference edition adds ` [with references]` before `.md`. Automatic naming requires a recorded meeting date; use `--meeting-date` when preparing the source if it needs an explicit date.
 
@@ -56,7 +68,7 @@ Keep the group-specific title in local-only `Meetings/.harness/report-naming.jso
 
 The nearest such configuration above the source (for `run`) or bundle (for `render`) supplies the title. `--report-title` can override it for one run. Without a configuration or override, the public default is `learning group [catch-up]`. Configuration is trusted local input; titles cannot contain path separators or invalid filename characters. Never copy a real group's title into public fixtures or code.
 
-Run commands from `harness/`. Meeting dates come from transcript headers or filenames, never modification times. Supported inputs are `.docx`, `.md`, and `.txt`; Word tables and common timestamped speaker labels are read. Hidden folders, reserved report names `summary.md` and `digest.md`, legacy `*_with_references.md` reports, new `* [with references].md` reports, and concise Markdown reports with those companions are skipped when selecting sources. Keep each generated pair together. Scan `Meetings/`, not the whole project, which also contains public documentation and fictional examples. Ambiguous or undated latest selection stops; use `--source` and optionally `--meeting-date YYYY-MM-DD` to select deliberately.
+Run commands from `harness/`. Meeting dates come from transcript headers or filenames, never modification times. Supported inputs are `.docx`, `.md`, and `.txt`; Word tables and common timestamped speaker labels are read. Imported PDFs and decks are retained as files; they are not automatically treated as transcripts. Hidden folders, `resources/`, reserved report names `summary.md` and `digest.md`, legacy `*_with_references.md` reports, new `* [with references].md` reports, and concise Markdown reports with those companions are skipped when selecting sources. Keep each generated pair together. Scan `Meetings/`, not the whole project, which also contains public documentation and fictional examples. Ambiguous or undated latest selection stops; use `--source` and optionally `--meeting-date YYYY-MM-DD` to select deliberately.
 
 Real originals, finished summaries, intermediate outputs, and old versions stay under the ignored `Meetings/` tree. They must never enter Git history or the public allowlist. The output guard permits this local folder while still rejecting generated material in code, tests, and other public folders. Never put real names, quotations, summaries, or logs into public examples, tests, issues, or commits.
 
