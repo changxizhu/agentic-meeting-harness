@@ -35,7 +35,7 @@ def fictional_artifacts(bundle: dict) -> dict:
     """Use the public offline example without reading any actual meeting."""
     context = {}
     for stage, name in (("discussion", "discussion"), ("coverage_review", "coverage"),
-                        ("brief", "brief"), ("agenda", "agenda")):
+                        ("brief", "brief"), ("concise", "concise"), ("agenda", "agenda")):
         context[name] = FIXTURE["stage_output"](stage, bundle, context)
         context[name + "_sha256"] = artifact_hash(context[name])
     return context
@@ -191,7 +191,7 @@ class CommandWorkflowTests(unittest.TestCase):
     def artifact_flags(self, artifacts: dict | None = None, bundle: dict | None = None) -> list[str]:
         values = self.artifacts if artifacts is None else artifacts
         flags = ["--bundle", str(self.json_file("bundle-input.json", self.bundle if bundle is None else bundle))]
-        for name in ("discussion", "coverage", "brief", "agenda"):
+        for name in ("discussion", "coverage", "brief", "concise", "agenda"):
             flags.extend(["--" + name, str(self.json_file(name + "-input.json", values[name]))])
         return flags
 
@@ -218,6 +218,8 @@ class CommandWorkflowTests(unittest.TestCase):
             "    value['issues'] = [{'kind': 'missing_comment', 'topic_id': 'T2', 'segment_ids': ['S0005'], 'detail': 'Recheck Casey timing comment against the source.'}]\n"
             "if mode == 'missing-topic' and stage == 'brief' and count == 1: value['topics'].pop()\n"
             "if mode == 'missing-comment' and stage == 'brief' and count == 1: value['topics'][1]['discussion'].pop()\n"
+            "if mode == 'concise-missing-topic' and stage == 'concise' and count == 1: value['topics'].pop()\n"
+            "if mode == 'concise-invalid' and stage == 'concise': value['topics'][1]['comments'] = []\n"
             "if mode == 'attribution' and stage == 'discussion': value['topics'][0]['presentation']['evidence'] = value['topics'][0]['discussion'][0]['evidence']\n"
             "print(json.dumps(value))\n", encoding="utf-8")
         return target
@@ -265,11 +267,11 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertIn("Alex and Blair support a small workshop", text)
         self.assertLess(text.index("Workshop timing"), text.index("下次讨论议题"))
 
-    def test_run_only_calls_agenda_after_coverage_and_complete_brief(self) -> None:
+    def test_run_only_calls_agenda_after_coverage_and_both_complete_summaries(self) -> None:
         result, out, adapter = self.run_adapter("success")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.stages(adapter), ["discussion", "coverage_review", "brief", "agenda"])
-        for name in ("discussion", "coverage", "brief", "agenda"):
+        self.assertEqual(self.stages(adapter), ["discussion", "coverage_review", "brief", "concise", "agenda"])
+        for name in ("discussion", "coverage", "brief", "concise", "agenda"):
             self.assertEqual(json.loads((out / (name + ".json")).read_text()), self.artifacts[name])
         receipt = json.loads((out / "receipt.json").read_text())
         self.assertEqual(receipt["status"], "ordered_workflow_completed")
@@ -280,13 +282,71 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertTrue((out / "summary_with_references.md").exists())
         self.assertFalse((out / "digest.md").exists())
         self.assertEqual(receipt["reports"], {"concise": "summary.md", "with_references": "summary_with_references.md"})
+        self.assertEqual(receipt["concise_sha256"], artifact_hash(self.artifacts["concise"]))
         self.assertFalse((out / "failure.json").exists())
-        self.assertEqual([call["segments_present"] for call in self.calls(adapter)], [True, True, True, False])
+        self.assertEqual([call["segments_present"] for call in self.calls(adapter)], [True, True, True, False, False])
+        self.assertIn('concise', self.calls(adapter)[-1]['context_keys'])
+        self.assertIn('concise_sha256', self.calls(adapter)[-1]['context_keys'])
+
+    def test_concise_stage_rewrites_each_topic_and_groups_comments_into_short_prose(self) -> None:
+        result, out, _ = self.run_adapter("success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        concise = json.loads((out / "concise.json").read_text())
+        self.assertEqual([item['id'] for item in concise['topics']], ['T1', 'T2'])
+        for compressed, complete in zip(concise['topics'], self.artifacts['brief']['topics']):
+            self.assertIsInstance(compressed['comments'], str)
+            self.assertNotEqual(compressed['presentation'], complete['presentation'])
+            self.assertNotEqual(compressed['outcome'], complete['outcome'])
+            for comment in complete['discussion']:
+                self.assertNotIn(comment['summary'], compressed['comments'])
+        timing = concise['topics'][1]
+        self.assertIn('Casey', timing['comments'])
+        self.assertIn('Alex', timing['comments'])
+        self.assertIn('weekend', timing['outcome'])
+        self.assertIn('open', timing['outcome'])
+        self.assertEqual(timing['comment_ids'], ['T2.C1', 'T2.C2'])
+        self.assertEqual(timing['unresolved_ids'], ['T2.U1'])
+        text = (out / 'summary.md').read_text()
+        for topic in concise['topics']:
+            self.assertIn(topic['title'], text)
+            self.assertIn(topic['presentation'], text)
+            self.assertIn(topic['comments'], text)
+            self.assertIn(topic['outcome'], text)
+        for internal in ('T2.C1', 'T2.U1', '[E1]', '原文依据', '评论与回应'):
+            self.assertNotIn(internal, text)
+        self.assertLess(text.index('Workshop timing'), text.index('下次讨论议题'))
+
+    def test_missing_concise_topic_is_repaired_before_agenda_or_report_generation(self) -> None:
+        result, out, adapter = self.run_adapter('concise-missing-topic')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.stages(adapter), ['discussion', 'coverage_review', 'brief', 'concise', 'concise', 'agenda'])
+        calls = self.calls(adapter)
+        self.assertTrue(calls[4]['feedback'])
+        self.assertIn('previous_candidate', calls[4]['context_keys'])
+        receipt = json.loads((out / 'receipt.json').read_text())
+        self.assertTrue(receipt['attempts'][3]['errors'])
+        self.assertEqual(receipt['attempts'][4]['errors'], [])
+        self.assertEqual(json.loads((out / 'concise.json').read_text()), self.artifacts['concise'])
+        self.assertTrue((out / 'summary.md').exists())
+        self.assertTrue((out / 'summary_with_references.md').exists())
+
+    def test_invalid_concise_stage_blocks_agenda_and_both_reports_without_fallback(self) -> None:
+        result, out, adapter = self.run_adapter('concise-invalid')
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.stages(adapter), ['discussion', 'coverage_review', 'brief', 'concise', 'concise'])
+        self.assertTrue((out / 'brief.json').exists())
+        self.assertFalse((out / 'concise.json').exists())
+        self.assertFalse((out / 'agenda.json').exists())
+        self.assertFalse((out / 'summary.md').exists())
+        self.assertFalse((out / 'summary_with_references.md').exists())
+        failure = json.loads((out / 'failure.json').read_text())
+        self.assertIn('concise', failure['reason'])
+        self.assertTrue(failure['attempts'][-1]['errors'])
 
     def test_run_repairs_malformed_first_response_with_feedback(self) -> None:
         result, out, adapter = self.run_adapter("repair")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.stages(adapter), ["discussion", "discussion", "coverage_review", "brief", "agenda"])
+        self.assertEqual(self.stages(adapter), ["discussion", "discussion", "coverage_review", "brief", "concise", "agenda"])
         records = json.loads((out / "receipt.json").read_text())["attempts"]
         self.assertTrue(records[0]["errors"])
         self.assertEqual(records[1]["errors"], [])
@@ -297,7 +357,7 @@ class CommandWorkflowTests(unittest.TestCase):
     def test_coverage_revision_repairs_discussion_before_shortening(self) -> None:
         result, out, adapter = self.run_adapter("coverage-once")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.stages(adapter), ["discussion", "coverage_review", "discussion", "coverage_review", "brief", "agenda"])
+        self.assertEqual(self.stages(adapter), ["discussion", "coverage_review", "discussion", "coverage_review", "brief", "concise", "agenda"])
         repaired = self.calls(adapter)[2]
         self.assertIn("coverage_feedback", repaired["context_keys"])
         self.assertIn("previous_discussion", repaired["context_keys"])
@@ -321,7 +381,7 @@ class CommandWorkflowTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 result, out, adapter = self.run_adapter(mode)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(self.stages(adapter), ["discussion", "coverage_review", "brief", "brief", "agenda"])
+                self.assertEqual(self.stages(adapter), ["discussion", "coverage_review", "brief", "brief", "concise", "agenda"])
                 records = json.loads((out / "receipt.json").read_text())["attempts"]
                 self.assertTrue(records[2]["errors"])
                 self.assertTrue(any("preserve every" in error for error in records[2]["errors"]))
@@ -372,11 +432,14 @@ class CommandWorkflowTests(unittest.TestCase):
         discussion_path = flags[3]
         coverage_path = flags[5]
         brief_path = flags[7]
+        concise_path = flags[9]
         cases = [
             ("agenda", []),
             ("agenda", ["--discussion", discussion_path]),
             ("agenda", ["--discussion", discussion_path, "--coverage", coverage_path]),
+            ("agenda", ["--discussion", discussion_path, "--coverage", coverage_path, "--brief", brief_path]),
             ("brief", ["--discussion", discussion_path]),
+            ("concise", ["--discussion", discussion_path, "--coverage", coverage_path]),
         ]
         for index, (stage, prior) in enumerate(cases):
             with self.subTest(stage=stage, prior=prior):
@@ -387,11 +450,50 @@ class CommandWorkflowTests(unittest.TestCase):
         agenda_prompt = self.folder / "agenda.prompt.txt"
         result = self.cli("prompt", "--stage", "agenda", "--bundle", bundle_path,
                           "--discussion", discussion_path, "--coverage", coverage_path,
-                          "--brief", brief_path, "--out", agenda_prompt)
+                          "--brief", brief_path, "--concise", concise_path, "--out", agenda_prompt)
         self.assertEqual(result.returncode, 0, result.stderr)
         stage, payload = FIXTURE["parse_prompt"](agenda_prompt.read_text())
         self.assertEqual(stage, "agenda")
         self.assertNotIn("segments", payload["bundle"])
+        self.assertEqual(payload['context']['concise'], self.artifacts['concise'])
+        self.assertEqual(payload['context']['concise_sha256'], artifact_hash(self.artifacts['concise']))
+
+    def test_manual_concise_prompt_requires_complete_brief_and_uses_approved_context(self) -> None:
+        flags = self.artifact_flags()
+        out = self.folder / 'concise.prompt.txt'
+        result = self.cli('prompt', '--stage', 'concise', '--bundle', flags[1],
+                          '--discussion', flags[3], '--coverage', flags[5], '--brief', flags[7], '--out', out)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stage, payload = FIXTURE['parse_prompt'](out.read_text())
+        self.assertEqual(stage, 'concise')
+        self.assertNotIn('segments', payload['bundle'])
+        self.assertEqual(payload['context']['brief'], self.artifacts['brief'])
+
+    def test_manual_check_and_render_require_valid_concise_without_single_version_fallback(self) -> None:
+        flags = self.artifact_flags()
+        # All historical artifacts alone are insufficient: compression is a
+        # separate checked task, never an optional rendering shortcut.
+        without_concise = flags[:8] + flags[10:]
+        for action in ('check', 'render'):
+            with self.subTest(action=action):
+                out = self.folder / (action + '-without-concise.md')
+                result = self.cli(action, *without_concise, *(['--out', out] if action == 'render' else []))
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('--concise', result.stderr)
+                self.assertFalse(out.exists())
+                self.assertFalse(out.with_name(out.stem + '_with_references.md').exists())
+        broken = deepcopy(self.artifacts)
+        broken['concise']['topics'].pop()
+        broken_flags = self.artifact_flags(broken)
+        for action in ('check', 'render'):
+            with self.subTest(action=action, invalid=True):
+                out = self.folder / (action + '-invalid-concise.md')
+                result = self.cli(action, *broken_flags, *(['--out', out] if action == 'render' else []))
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('preserve every topic', result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+                self.assertFalse(out.exists())
+                self.assertFalse(out.with_name(out.stem + '_with_references.md').exists())
 
     def test_manual_prompt_rejects_revision_and_incomplete_brief(self) -> None:
         flags = self.artifact_flags()
@@ -400,7 +502,7 @@ class CommandWorkflowTests(unittest.TestCase):
         revised["issues"] = [{"kind": "missing_response", "topic_id": "T2",
                               "segment_ids": ["S0006"], "detail": "Check Alex's reply."}]
         coverage_path = self.json_file("coverage-revise.json", revised)
-        for stage in ("brief", "agenda"):
+        for stage in ("brief", "concise", "agenda"):
             out = self.folder / (stage + "-blocked.txt")
             result = self.cli("prompt", "--stage", stage, "--bundle", flags[1],
                               "--discussion", flags[3], "--coverage", coverage_path,
@@ -451,6 +553,7 @@ class CommandWorkflowTests(unittest.TestCase):
         values = {"discussion": discussion}
         values["coverage"] = FIXTURE["stage_output"]("coverage_review", bundle, values)
         values["brief"] = FIXTURE["stage_output"]("brief", bundle, values)
+        values["concise"] = FIXTURE["stage_output"]("concise", bundle, values)
         values["agenda"] = {"schema_version": 2, "meeting": discussion["meeting"],
                             "discussion_sha256": artifact_hash(discussion), "brief_sha256": artifact_hash(values["brief"]),
                             "items": [{"id": "A1", "kind": "synthesizer_suggestion", "title": "Explore the first topic.",
@@ -459,7 +562,7 @@ class CommandWorkflowTests(unittest.TestCase):
         result = self.cli("check", *self.artifact_flags(values, bundle))
         self.assertEqual(result.returncode, 0, result.stderr)
         context = {**values, **{name + "_sha256": artifact_hash(value) for name, value in values.items()}}
-        for stage in ("discussion", "coverage_review", "brief"):
+        for stage in ("discussion", "coverage_review", "brief", "concise"):
             prompt = build_prompt(stage, bundle, context)
             instructions = prompt.split("UNTRUSTED INPUT (JSON DATA):", 1)[0]
             self.assertNotIn("1–3", instructions)

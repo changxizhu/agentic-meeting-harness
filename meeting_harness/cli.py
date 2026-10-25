@@ -1,4 +1,4 @@
-"""Ordered discussion, coverage review, brief, and only then next agenda."""
+"""Restore, review and compress all discussion before selecting the next agenda."""
 from __future__ import annotations
 
 import argparse
@@ -11,9 +11,9 @@ import sys
 from .ingest import HarnessError, latest_source, make_bundle
 from .prompts import build_prompt, schema_for
 from .review import (artifact_hash, render_concise_markdown, render_markdown, validate_agenda, validate_brief,
-                     validate_bundle, validate_coverage, validate_discussion)
+                     validate_bundle, validate_concise, validate_coverage, validate_discussion)
 
-STAGES = ('discussion', 'coverage_review', 'brief', 'agenda')
+STAGES = ('discussion', 'coverage_review', 'brief', 'concise', 'agenda')
 
 
 def dump(value: object) -> str:
@@ -89,9 +89,9 @@ def require_valid(errors: list[str]) -> None:
         raise HarnessError('Validation failed:\n' + '\n'.join(errors))
 
 
-def stage_context(discussion=None, coverage=None, brief=None) -> dict:
+def stage_context(discussion=None, coverage=None, brief=None, concise=None) -> dict:
     context = {}
-    for name, value in (('discussion', discussion), ('coverage', coverage), ('brief', brief)):
+    for name, value in (('discussion', discussion), ('coverage', coverage), ('brief', brief), ('concise', concise)):
         if value is not None:
             context[name] = value
             context[name + '_sha256'] = artifact_hash(value)
@@ -115,30 +115,35 @@ def prepare(args) -> tuple[dict, Path]:
 def load_prior(args, stage: str):
     bundle = load_json(args.bundle)
     require_valid(validate_bundle(bundle))
-    discussion = coverage = brief = agenda = None
+    discussion = coverage = brief = concise = agenda = None
     if stage != 'discussion':
         if not args.discussion:
             raise HarnessError('Complete the discussion stage first; --discussion is required.')
         discussion = load_json(args.discussion)
         require_valid(validate_discussion(discussion, bundle))
-    if stage in ('brief', 'agenda', 'complete'):
+    if stage in ('brief', 'concise', 'agenda', 'complete'):
         if not args.coverage:
             raise HarnessError('A passed coverage review is required before shortening the meeting or proposing an agenda.')
         coverage = load_json(args.coverage)
         require_valid(validate_coverage(coverage, discussion, bundle))
         if coverage['status'] != 'pass':
             raise HarnessError('Coverage review requires revision; repair the discussion before proceeding.')
-    if stage in ('agenda', 'complete'):
+    if stage in ('concise', 'agenda', 'complete'):
         if not args.brief:
             raise HarnessError('Complete the meeting brief first; --brief is required.')
         brief = load_json(args.brief)
         require_valid(validate_brief(brief, discussion, coverage, bundle))
+    if stage in ('agenda', 'complete'):
+        if not args.concise:
+            raise HarnessError('Complete the compressed meeting summary first; --concise is required. Both report versions must be ready before selecting the next agenda.')
+        concise = load_json(args.concise)
+        require_valid(validate_concise(concise, discussion, coverage, brief, bundle))
     if stage == 'complete':
         if not args.agenda:
             raise HarnessError('The final agenda artifact is required.')
         agenda = load_json(args.agenda)
         require_valid(validate_agenda(agenda, discussion, brief, bundle))
-    return bundle, discussion, coverage, brief, agenda
+    return bundle, discussion, coverage, brief, concise, agenda
 
 
 class ModelRunner:
@@ -218,14 +223,18 @@ def run_model(args) -> None:
         brief = runner.generate('brief', stage_context(discussion, coverage),
                                 lambda x: validate_brief(x, discussion, coverage, bundle))
         write_private(out / 'brief.json', dump(brief))
-        agenda = runner.generate('agenda', stage_context(discussion, coverage, brief),
+        concise = runner.generate('concise', stage_context(discussion, coverage, brief),
+                                  lambda x: validate_concise(x, discussion, coverage, brief, bundle))
+        write_private(out / 'concise.json', dump(concise))
+        agenda = runner.generate('agenda', stage_context(discussion, coverage, brief, concise),
                                  lambda x: validate_agenda(x, discussion, brief, bundle))
         write_private(out / 'agenda.json', dump(agenda))
         reports = write_report_pair(out / 'summary.md',
-                                    render_concise_markdown(discussion, coverage, brief, agenda, bundle),
+                                    render_concise_markdown(discussion, coverage, brief, agenda, bundle, concise),
                                     render_markdown(discussion, coverage, brief, agenda, bundle))
         write_private(out / 'receipt.json', dump({'schema_version': 2, 'status': 'ordered_workflow_completed',
                       'source_sha256': bundle['meeting']['source_sha256'], 'discussion_sha256': artifact_hash(discussion),
+                      'concise_sha256': artifact_hash(concise),
                       'topic_count': len(discussion['topics']), 'stage_order': STAGES, 'attempts': runner.records,
                       'reports': {'concise': reports[0].name, 'with_references': reports[1].name},
                       'review_limits': 'A coverage-review pass is a model assessment, not proof of semantic completeness. Human review remains useful.'}))
@@ -254,7 +263,7 @@ def parser():
     for action in ('prompt', 'check', 'render'):
         p = sub.add_parser(action)
         p.add_argument('--bundle', type=Path, required=True)
-        for name in ('discussion', 'coverage', 'brief', 'agenda'):
+        for name in ('discussion', 'coverage', 'brief', 'concise', 'agenda'):
             p.add_argument('--' + name, type=Path)
         if action == 'prompt':
             p.add_argument('--stage', choices=STAGES, required=True)
@@ -277,14 +286,14 @@ def main(argv=None) -> int:
             run_model(args)
         else:
             stage = args.stage if args.action == 'prompt' else 'complete'
-            bundle, discussion, coverage, brief, agenda = load_prior(args, stage)
+            bundle, discussion, coverage, brief, concise, agenda = load_prior(args, stage)
             if args.action == 'prompt':
-                content = build_prompt(stage, bundle, context=stage_context(discussion, coverage, brief), language=args.language)
+                content = build_prompt(stage, bundle, context=stage_context(discussion, coverage, brief, concise), language=args.language)
                 write_private(private_destination(args.out), content)
                 print('Prompt created after checking the required prior stages.')
             elif args.action == 'render':
                 reports = write_report_pair(args.out,
-                                            render_concise_markdown(discussion, coverage, brief, agenda, bundle),
+                                            render_concise_markdown(discussion, coverage, brief, agenda, bundle, concise),
                                             render_markdown(discussion, coverage, brief, agenda, bundle))
                 print(f'Both reports rendered: {reports[0].name} (concise) and {reports[1].name} (with source references).')
             else:

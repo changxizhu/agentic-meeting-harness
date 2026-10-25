@@ -413,6 +413,43 @@ def _brief_body(c, root, discussion):
                 c.string(value.get(text_field), p + "." + text_field)
 
 
+def validate_concise(concise: object, discussion: object, coverage: object,
+                     brief: object, bundle: object) -> list[str]:
+    """Check a separate semantic compression, never infer it from the full brief.
+
+    ID checks retain topic coverage and account for unresolved records. They do
+    not establish that the prose captures their meaning or is well compressed;
+    the concise stage must review those editorial decisions against the records.
+    """
+    c, root = _stage(concise, "concise", {"discussion_sha256", "brief_sha256", "topics"}, bundle)
+    c.errors.extend(validate_brief(brief, discussion, coverage, bundle))
+    c.binding(root.get("discussion_sha256"), discussion, "concise.discussion_sha256")
+    c.binding(root.get("brief_sha256"), brief, "concise.brief_sha256")
+    d = discussion if isinstance(discussion, dict) else {}
+    source_topics = _dicts(d.get("topics"))
+    topics = c.seq(root.get("topics"), "concise.topics", 1)
+    if _list_ids(topics) != _list_ids(source_topics):
+        c.errors.append("concise.topics: must preserve every topic ID in the same order")
+    for i, raw in enumerate(topics):
+        path = f"concise.topics[{i}]"
+        item = c.obj(raw, path, {"id", "title", "presentation", "comments", "outcome", "comment_ids", "unresolved_ids"})
+        source = source_topics[i] if i < len(source_topics) else {}
+        for field in ("id", "title", "presentation", "comments", "outcome"):
+            c.string(item.get(field), path + "." + field)
+        if item.get("title") != source.get("title"):
+            c.errors.append(f"{path}.title: must preserve the approved discussion topic title")
+        original_comments = [cid for cid in _list_ids(source.get("discussion")) if isinstance(cid, str)]
+        selected = c.ids(item.get("comment_ids"), path + ".comment_ids", original_comments,
+                         minimum=1 if original_comments else 0, ordered=True)
+        if not original_comments and selected:
+            c.errors.append(f"{path}.comment_ids: must be empty when there are no original comments")
+        unresolved = c.ids(item.get("unresolved_ids"), path + ".unresolved_ids",
+                           [uid for uid in _list_ids(source.get("unresolved")) if isinstance(uid, str)], ordered=True)
+        if unresolved != _list_ids(source.get("unresolved")):
+            c.errors.append(f"{path}.unresolved_ids: must preserve every original unresolved ID in the same order")
+    return c.errors
+
+
 def validate_agenda(agenda: object, discussion: object, brief: object, bundle: object) -> list[str]:
     c, root = _stage(agenda, "agenda", {"discussion_sha256", "brief_sha256", "items", "deferred_recorded_proposals"}, bundle)
     c.errors.extend(validate_discussion(discussion, bundle))
@@ -581,15 +618,15 @@ def render_markdown(discussion: dict, coverage: dict, brief: dict, agenda: dict,
     return "\n".join(rows)
 
 
-def render_concise_markdown(discussion: dict, coverage: dict, brief: dict, agenda: dict, bundle: dict) -> str:
-    """Render the same approved content compactly, without source references.
+def render_concise_markdown(discussion: dict, coverage: dict, brief: dict, agenda: dict,
+                            bundle: dict, concise: dict) -> str:
+    """Render only the independently compressed topic prose and final agenda.
 
-    Shortening changes the presentation rather than selecting fewer topics or
-    replies. All brief entries, original attributions and unresolved positions
-    remain visible; quotations and the source-review appendix belong only in the
-    companion reference edition.
+    The complete brief remains the source for the reference edition. A separate
+    concise artifact is mandatory: rendering cannot replace semantic compression
+    by merely hiding its references or replaying every comment in fewer lines.
     """
-    errors = validate_brief(brief, discussion, coverage, bundle)
+    errors = validate_concise(concise, discussion, coverage, brief, bundle)
     errors.extend(validate_agenda(agenda, discussion, brief, bundle))
     if errors:
         raise ValueError("Artifacts failed validation:\n" + "\n".join(errors))
@@ -600,48 +637,16 @@ def render_concise_markdown(discussion: dict, coverage: dict, brief: dict, agend
     def speaker(value):
         return line(value or "未标注发言人")
 
-    kinds = {"question": "提问", "suggestion": "建议", "challenge": "质疑", "support": "支持", "clarification": "澄清", "addition": "补充", "response": "回应"}
-    statuses = {"agreement": "形成共识", "partial_agreement": "局部共识", "answered": "问题得到回应", "open": "仍待讨论", "no_conclusion": "未形成结论"}
-    topics = {item["id"]: item for item in discussion["topics"]}
-    briefs = {item["id"]: item for item in brief["topics"]}
+    compressed = {item["id"]: item for item in concise["topics"]}
     proposals = {item["id"]: item for topic in discussion["topics"] for item in topic["recorded_next_steps"]}
     rows = [f"# {line(discussion['meeting']['title'])}（精简版）", "",
             f"会议日期：{discussion['meeting']['date'] or '未记录'}", ""]
     for round_item in discussion["rounds"]:
         rows.extend([f"## {speaker(round_item['presenter'])} 的分享", ""])
         for tid in round_item["topic_ids"]:
-            topic, short = topics[tid], briefs[tid]
+            short = compressed[tid]
             rows.extend([f"### {line(short['title'])}", "",
-                         f"**{speaker(topic['presenter'])}分享：** {line(short['presentation'])}", ""])
-            comments = {item["id"]: item for item in topic["discussion"]}
-            chain = []
-            for original, compact in zip(topic["discussion"], short["discussion"]):
-                if original["reply_to"] == "presentation":
-                    # Start a new paragraph when a participant returns to the
-                    # presentation, retaining every branch in source order.
-                    if chain:
-                        rows.extend([" ".join(chain), ""])
-                        chain = []
-                    target = speaker(topic["presenter"]) + "的分享"
-                else:
-                    replied = comments[original["reply_to"]]
-                    target = speaker(replied["speaker"]) + "的" + kinds[replied["kind"]]
-                chain.append(f"**{speaker(original['speaker'])}{kinds[original['kind']]}（针对{target}）：** {line(compact['summary'])}")
-            if chain:
-                rows.extend([" ".join(chain), ""])
-            if not topic["discussion"]:
-                rows.extend(["未记录针对本话题的评论。", ""])
-            outcome = topic["outcome"]
-            participants = "（" + "、".join(speaker(name) for name in outcome["participants"]) + "）" if outcome["participants"] else ""
-            rows.extend([f"**{statuses[outcome['status']]}{participants}：** {line(short['outcome'])}", ""])
-            for original, compact in zip(topic["unresolved"], short["unresolved"]):
-                kind = "未解决分歧" if original["kind"] == "disagreement" else "开放问题"
-                positions = " ".join(f"{speaker(item['speaker'])}：{line(item['view'])}" for item in original["positions"])
-                rows.extend([f"**{kind}：** {line(compact['summary'])}" + (f" {positions}" if positions else ""), ""])
-            if topic["recorded_next_steps"]:
-                recorded = " ".join(f"{speaker(original['proposer'])}：{line(compact['proposal'])}"
-                                     for original, compact in zip(topic["recorded_next_steps"], short["recorded_next_steps"]))
-                rows.extend(["**会上后续建议：** " + recorded, ""])
+                         " ".join(line(short[field]) for field in ("presentation", "comments", "outcome")), ""])
     rows.extend(["## 下次讨论议题", "", "议题入选不代表会议已作出决定。", ""])
     for item in agenda["items"]:
         label = "会上已有提议" if item["kind"] == "meeting_proposal" else "总结者延伸建议"

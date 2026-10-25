@@ -1,7 +1,7 @@
 """Public stage instructions and strict output contracts, without meeting material.
 
 The stages separate complete reconstruction, independent coverage review,
-concise wording, and selection of a future agenda. Only the last stage selects
+complete wording, semantic compression, and selection of a future agenda. Only the last stage selects
 and limits future agenda items.
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 
-STAGES = ("discussion", "coverage_review", "brief", "agenda")
+STAGES = ("discussion", "coverage_review", "brief", "concise", "agenda")
 
 
 def schema_for(stage: str) -> dict:
@@ -128,6 +128,21 @@ def schema_for(stage: str) -> dict:
                 "outcome": text,
                 "unresolved": array(obj({"id": text, "summary": text})),
                 "recorded_next_steps": array(obj({"id": text, "proposal": text})),
+            }), 1),
+        })
+
+    if stage == "concise":
+        return obj({**common,
+            "discussion_sha256": digest,
+            "brief_sha256": digest,
+            "topics": array(obj({
+                "id": text,
+                "title": text,
+                "presentation": text,
+                "comments": text,
+                "outcome": text,
+                "comment_ids": array(text, unique=True),
+                "unresolved_ids": array(text, unique=True),
             }), 1),
         })
 
@@ -261,7 +276,7 @@ discussion_sha256 exactly. Required keys are exactly schema_version, meeting,
 discussion_sha256, status, checked_topic_ids, checked_segment_ids, issues.
 Do not rewrite the discussion or select future agenda items in this response.
 """,
-    "brief": """Write a concise complete brief ONLY from the coverage-approved reconstruction.
+    "brief": """Write the complete detailed brief ONLY from the coverage-approved reconstruction.
 
 This stage follows a passed independent coverage review. Shorten wording only
 after complete coverage has been established. There is no topic-count limit.
@@ -292,11 +307,54 @@ recorded_next_steps. Discussion entries have id and summary; unresolved entries
 have id and summary; recorded next steps have id and proposal. Check the IDs and
 content against the approved reconstruction before returning the brief.
 """,
-    "agenda": """Select a next-meeting agenda ONLY AFTER the complete brief exists.
+    "concise": """Semantically compress EACH topic ONLY AFTER the complete brief exists.
 
-Use the approved discussion and complete brief. Select 1–3 useful concrete agenda
+The reconstruction, independent full-source coverage review, and complete brief
+must already be finished. Use their approved content to produce a genuinely
+shorter reading edition, not the complete brief with citations or formatting
+removed. There is no topic-count limit. Retain EVERY topic separately, with its
+approved ID, title, and order. Do not merge away any topic or select the next agenda.
+
+For EACH topic, aim for 3–5 sentences TOTAL across presentation, comments, and
+outcome: usually one sentence on who shared what, one or two on the MAIN comments
+and responses with the relevant people's names, and one on the discussion result.
+Rewrite and combine related exchanges in your own concise wording. Do not replay
+every comment, reproduce the complete reply chain, repeat all personal future
+plans, or concatenate the existing brief's strings. Minor comments may be omitted;
+the main question, consequential response, and correction of misunderstood intent
+must remain intelligible. A topic with no comments must say so without inventing
+an exchange. Keep sharing, others' comments, and results distinguishable.
+
+Preserve the scope of any local agreement, important uncertainty, ALL unresolved
+disagreements and open questions, and each relevant position when there is an
+actual disagreement. Different examples or unanswered questions are not themselves
+disagreements. Do not turn a suggestion or praise into a decision or generalize a
+two-person agreement to the whole group. Attribute speculative self-reports.
+Fold unresolved material into the short outcome text instead of appending its full
+records. Retain enough detail to distinguish this topic from a generic label.
+
+comment_ids lists, once each and in original order, the original comments actually
+represented in the compressed text; it may be a subset. It must be nonempty when
+the original topic has comments, and empty when there are none. unresolved_ids
+lists EVERY original unresolved ID in order. These IDs are private checking
+metadata, not text to print; do not include reference markers, quotations, source
+segment IDs, hashes, or audit notes in presentation/comments/outcome.
+
+Before returning, self-review EACH compressed topic against the approved records:
+does it still identify the share, main named exchange, outcome, narrow agreement,
+and unresolved positions while using only a few sentences? Revise if compression
+has changed meaning, hidden an unresolved issue, or merely removed references.
+IDs and valid bindings do not prove semantic fidelity or genuine compression.
+
+Copy supplied discussion_sha256 and brief_sha256 exactly. Required keys are exactly
+schema_version, meeting, discussion_sha256, brief_sha256, topics. Each topic has
+exactly id, title, presentation, comments, outcome, comment_ids, unresolved_ids.
+""",
+    "agenda": """Select a next-meeting agenda ONLY AFTER both summary versions exist.
+
+Use the approved discussion, complete brief, and finished concise summary. Select 1–3 useful concrete agenda
 items only now; this limit applies to the final future agenda, never to the earlier
-analysis, reconstruction, coverage review, or complete brief. Give IDs A1, A2, ... .
+analysis, reconstruction, coverage review, complete brief, or concise summary. Give IDs A1, A2, ... .
 
 Prioritize suggestions explicitly made for the next meeting over optional personal
 future plans. Distinguish a participant's own planned work from a request that the
@@ -340,15 +398,18 @@ def build_prompt(stage: str, bundle: dict, context: dict | None = None,
         prior = {key: context[key] for key in ("previous_discussion", "coverage_feedback") if key in context}
     elif stage == "coverage_review":
         prior = {key: context[key] for key in ("discussion", "discussion_sha256")}
-    elif stage == "brief":
+    elif stage in ("brief", "concise"):
         if context["coverage"].get("status") != "pass":
-            raise ValueError("A passed coverage review is required before building the brief prompt")
+            raise ValueError(f"A passed coverage review is required before building the {stage} prompt")
         prior = {key: context[key] for key in
                  ("discussion", "coverage", "discussion_sha256", "coverage_sha256")}
+        if stage == "concise":
+            source = {"schema_version": bundle["schema_version"], "meeting": bundle["meeting"]}
+            prior.update({key: context[key] for key in ("brief", "brief_sha256")})
     else:
         source = {"schema_version": bundle["schema_version"], "meeting": bundle["meeting"]}
         prior = {key: context[key] for key in
-                 ("discussion", "brief", "discussion_sha256", "brief_sha256")}
+                 ("discussion", "brief", "concise", "discussion_sha256", "brief_sha256", "concise_sha256")}
     if "previous_candidate" in context:
         prior["previous_candidate"] = context["previous_candidate"]
     sections = [f"STAGE: {stage}", _BOUNDARY, _RULES[stage],

@@ -18,17 +18,29 @@ plans. Exact quote checking is not semantic verification; retain that distinctio
 Restore all presenter-led topics and comment-to-response relationships before
 shortening wording. An independent full-source coverage review must pass before
 the complete brief is written. Do not impose a topic count or choose what to omit
-based on the future agenda. Only after the brief is complete, select one to three
-next-discussion items, prioritizing recorded proposals and identifying extensions.
+based on the future agenda. After the full brief, write a genuinely condensed
+summary of every topic. Only after both summaries are complete, select one to
+three next-discussion items, prioritizing recorded proposals and identifying
+extensions.
 
 Every completed meeting must produce both reports together: summary.md is the
 concise report without reference markers or a source appendix;
 summary_with_references.md is the detailed report with evidence and quotations.
-Both use the same reviewed discussion, brief, and final agenda. Preserve every
-topic in order, essential comments and replies, individual attribution, outcomes,
-and unresolved questions in both versions. Shorten wording and layout; never
-reduce topic coverage to make the concise version shorter. Keep the four model
-stages unchanged. One to three still limits only the final next-discussion agenda.
+Both use the same reviewed discussion and final agenda. The reference edition
+keeps the detailed brief and evidence. The concise edition must rewrite the
+content, not merely remove references or tighten the layout: retain every topic
+in order and use a few sentences per topic (normally three to five in total) to
+describe the share, the main attributed comments and replies, and the result.
+Merge related comments, remove repetition and minor exchanges, and retain the
+meaning of unresolved disagreements, open questions, uncertainty, and narrow
+local agreement. Do not replay every comment, position, or follow-up proposal.
+Never shorten by deleting entire topics or cutting text mechanically.
+
+Run the stages in this order: discussion, coverage_review, brief, concise, agenda.
+The separate concise artifact is mandatory and must cover all approved topics;
+never fall back to rendering the full brief without citations. Check its meaning
+against the reviewed discussion before writing the final agenda. One to three
+still limits only the final next-discussion agenda, not meeting topic coverage.
 
 The run command writes both reports into its output folder. The render command's
 output path names the concise report and adds a sibling with _with_references

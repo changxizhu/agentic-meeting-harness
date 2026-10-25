@@ -63,6 +63,26 @@ def stage_output(stage, bundle, context):
                            'recorded_next_steps': [{'id': n['id'], 'proposal': n['proposal']} for n in t['recorded_next_steps']]})
         return {'schema_version': 2, 'meeting': meta, 'discussion_sha256': artifact_hash(discussion),
                 'coverage_sha256': artifact_hash(context['coverage']), 'topics': topics}
+    if stage == 'concise':
+        # These paragraphs are independently written for this invented example.
+        # Real adapters must synthesize the meaning rather than replay each turn.
+        prose = {
+            'Workshop scope': ('Alex suggests testing the idea with a small workshop.',
+                               'Blair backs the smaller starting scope.',
+                               'Their agreement is limited to scope; Casey gives no size preference.'),
+            'Workshop timing': ('Blair suggests meeting in the evening.',
+                                'Casey instead favours a weekend for volunteers, and Alex proposes comparing availability.',
+                                'The evening-versus-weekend choice remains open.')}
+        topics = []
+        for topic in discussion['topics']:
+            presentation, comments, outcome = prose.get(
+                topic['title'], (topic['presentation']['summary'], 'No comments were recorded.', topic['outcome']['summary']))
+            topics.append({'id': topic['id'], 'title': topic['title'], 'presentation': presentation,
+                           'comments': comments, 'outcome': outcome,
+                           'comment_ids': [comment['id'] for comment in topic['discussion']],
+                           'unresolved_ids': [item['id'] for item in topic['unresolved']]})
+        return {'schema_version': 2, 'meeting': meta, 'discussion_sha256': artifact_hash(discussion),
+                'brief_sha256': artifact_hash(context['brief']), 'topics': topics}
     if stage == 'agenda':
         return {'schema_version': 2, 'meeting': meta, 'discussion_sha256': artifact_hash(discussion),
                 'brief_sha256': artifact_hash(context['brief']),

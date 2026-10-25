@@ -5,7 +5,9 @@ import json
 import unittest
 
 from meeting_harness.review import (artifact_hash, render_concise_markdown, render_markdown, validate_agenda,
-                                    validate_brief, validate_bundle, validate_coverage, validate_discussion)
+                                    validate_brief, validate_bundle, validate_concise, validate_coverage, validate_discussion)
+
+from meeting_harness.prompts import STAGES, build_prompt, schema_for
 
 
 def fixture():
@@ -90,9 +92,31 @@ def fixture():
     return bundle, discussion, coverage, brief, agenda
 
 
+def concise_fixture(discussion, brief):
+    """An editorial summary, not a string join of all complete brief entries."""
+    return {"schema_version": 2, "meeting": copy.deepcopy(discussion["meeting"]),
+            "discussion_sha256": artifact_hash(discussion), "brief_sha256": artifact_hash(brief),
+            "topics": [
+                {"id": "T1", "title": discussion["topics"][0]["title"],
+                 "presentation": "Alice shared a pilot that tracks cost.",
+                 "comments": "Bob questioned supervision; Alice wants it until the audit, while Bob still wants it removed.",
+                 "outcome": "Alice and Bob agreed only on cost tracking; supervision remains disputed.",
+                 "comment_ids": ["T1.C1", "T1.C2", "T1.C3"], "unresolved_ids": ["T1.U1"]},
+                {"id": "T2", "title": discussion["topics"][1]["title"],
+                 "presentation": "Bob introduced the release calendar.",
+                 "comments": "Alice asked for a feasible date, and Bob said none had been set.",
+                 "outcome": "The release date remains an open question.",
+                 "comment_ids": ["T2.C1", "T2.C2"], "unresolved_ids": ["T2.U1"]}]}
+
+
 class ReviewTests(unittest.TestCase):
     def setUp(self):
         self.bundle, self.discussion, self.coverage, self.brief, self.agenda = fixture()
+        self.concise = concise_fixture(self.discussion, self.brief)
+
+    def render(self, renderer):
+        args = (self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
+        return renderer(*args, self.concise) if renderer is render_concise_markdown else renderer(*args)
 
     def errors(self):
         return validate_discussion(self.discussion, self.bundle)
@@ -107,6 +131,7 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(validate_coverage(self.coverage, self.discussion, self.bundle), [])
         self.assertEqual(validate_brief(self.brief, self.discussion, self.coverage, self.bundle), [])
         self.assertEqual(validate_agenda(self.agenda, self.discussion, self.brief, self.bundle), [])
+        self.assertEqual(validate_concise(self.concise, self.discussion, self.coverage, self.brief, self.bundle), [])
 
     def test_hash_is_canonical_utf8_json(self):
         left, right = {"b": "中文", "a": 1}, {"a": 1, "b": "中文"}
@@ -134,6 +159,17 @@ class ReviewTests(unittest.TestCase):
             self.discussion["rounds"].append({"id": rid, "presenter": "Alice", "topic_ids": [tid]})
         self.discussion["excluded_segments"] = [{"segment_ids": ["S0009"], "reason": "acknowledgment", "note": "Thanks."}]
         self.assertEqual(self.errors(), [])
+        self.coverage.update(discussion_sha256=artifact_hash(self.discussion),
+                             checked_topic_ids=[item["id"] for item in self.discussion["topics"]])
+        self.brief.update(discussion_sha256=artifact_hash(self.discussion), coverage_sha256=artifact_hash(self.coverage),
+                          topics=[{"id": item["id"], "title": item["title"], "presentation": "A separate short share.",
+                                   "discussion": [], "outcome": "No conclusion.", "unresolved": [], "recorded_next_steps": []}
+                                  for item in self.discussion["topics"]])
+        self.concise.update(discussion_sha256=artifact_hash(self.discussion), brief_sha256=artifact_hash(self.brief),
+                            topics=[{"id": item["id"], "title": item["title"], "presentation": "Alice gave a separate share.",
+                                     "comments": "No comments were recorded.", "outcome": "No conclusion was reached.",
+                                     "comment_ids": [], "unresolved_ids": []} for item in self.discussion["topics"]])
+        self.assertEqual(self.concise_errors(), [])
 
     def test_all_source_segments_must_be_accounted_for(self):
         self.discussion["topics"][0]["segment_ids"].remove("S0005")
@@ -321,6 +357,85 @@ class ReviewTests(unittest.TestCase):
         self.brief["topics"][0]["discussion"].reverse()
         self.assert_error("must preserve every original ID", validate_brief(self.brief, self.discussion, self.coverage, self.bundle))
 
+    def concise_errors(self, candidate=None):
+        return validate_concise(self.concise if candidate is None else candidate,
+                                self.discussion, self.coverage, self.brief, self.bundle)
+
+    def test_concise_requires_all_topics_titles_and_order(self):
+        missing = copy.deepcopy(self.concise)
+        missing["topics"].pop()
+        self.assert_error("must preserve every topic ID", self.concise_errors(missing))
+        reversed_topics = copy.deepcopy(self.concise)
+        reversed_topics["topics"].reverse()
+        self.assert_error("must preserve every topic ID", self.concise_errors(reversed_topics))
+        self.concise["topics"][0]["title"] = "A reframed topic"
+        self.assert_error("must preserve the approved discussion topic title", self.concise_errors())
+
+    def test_concise_can_select_main_comments_without_replaying_every_entry(self):
+        self.concise["topics"][0]["comment_ids"] = ["T1.C1", "T1.C3"]
+        self.assertEqual(self.concise_errors(), [])
+        for ids, expected in (([], "expected at least 1"),
+                              (["T2.C1"], "unknown ID"),
+                              (["T1.C1", "T1.C1"], "duplicate ID"),
+                              (["T1.C3", "T1.C1"], "IDs must follow source order")):
+            self.concise["topics"][0]["comment_ids"] = ids
+            self.assert_error(expected, self.concise_errors())
+
+    def test_concise_retains_all_unresolved_record_ids(self):
+        self.concise["topics"][0]["unresolved_ids"] = []
+        self.assert_error("must preserve every original unresolved ID", self.concise_errors())
+
+    def test_concise_requires_each_short_prose_field_and_exact_contract(self):
+        for field in ("presentation", "comments", "outcome"):
+            candidate = copy.deepcopy(self.concise)
+            candidate["topics"][0][field] = "  "
+            self.assert_error("expected a nonempty string", self.concise_errors(candidate))
+        self.concise["topics"][0]["discussion"] = copy.deepcopy(self.brief["topics"][0]["discussion"])
+        self.assert_error("unexpected field 'discussion'", self.concise_errors())
+
+    def test_concise_requires_exact_brief_binding_and_passed_review(self):
+        self.concise["brief_sha256"] = "b" * 64
+        self.assert_error("must match the referenced artifact", self.concise_errors())
+        self.concise["brief_sha256"] = artifact_hash(self.brief)
+        self.coverage["status"] = "revise"
+        self.assert_error("coverage audit must pass", self.concise_errors())
+
+    def test_concise_supports_topic_without_comments_without_inventing_ids(self):
+        self.discussion["topics"][0]["discussion"] = []
+        self.coverage["discussion_sha256"] = artifact_hash(self.discussion)
+        self.brief["topics"][0]["discussion"] = []
+        self.brief.update(discussion_sha256=artifact_hash(self.discussion), coverage_sha256=artifact_hash(self.coverage))
+        self.concise.update(discussion_sha256=artifact_hash(self.discussion), brief_sha256=artifact_hash(self.brief))
+        self.concise["topics"][0].update(comments="No comments were recorded.", comment_ids=[])
+        self.assertEqual(self.concise_errors(), [])
+        self.concise["topics"][0]["comment_ids"] = ["T1.C1"]
+        self.assert_error("must be empty when there are no original comments", self.concise_errors())
+
+    def test_concise_is_a_distinct_stage_before_agenda(self):
+        self.assertEqual(STAGES, ("discussion", "coverage_review", "brief", "concise", "agenda"))
+        schema = schema_for("concise")
+        self.assertNotIn("maxItems", schema["properties"]["topics"])
+        self.assertEqual(set(schema["properties"]["topics"]["items"]["properties"]),
+                         {"id", "title", "presentation", "comments", "outcome", "comment_ids", "unresolved_ids"})
+        context = {"discussion": self.discussion, "coverage": self.coverage, "brief": self.brief,
+                   "discussion_sha256": artifact_hash(self.discussion),
+                   "coverage_sha256": artifact_hash(self.coverage), "brief_sha256": artifact_hash(self.brief)}
+        prompt = build_prompt("concise", self.bundle, context)
+        for phrase in ("3–5 sentences TOTAL", "not the complete brief with citations", "ALL unresolved",
+                       "self-review EACH compressed topic", "There is no topic-count limit"):
+            self.assertIn(phrase, prompt)
+        data = json.loads(prompt.split("UNTRUSTED INPUT (JSON DATA):\n", 1)[1])
+        self.assertNotIn("segments", data["bundle"])
+        self.assertEqual(data["context"]["brief"], self.brief)
+        with self.assertRaises(KeyError):
+            build_prompt("agenda", self.bundle, context)
+        context.update(concise=self.concise, concise_sha256=artifact_hash(self.concise))
+        agenda_prompt = build_prompt("agenda", self.bundle, context)
+        agenda_data = json.loads(agenda_prompt.split("UNTRUSTED INPUT (JSON DATA):\n", 1)[1])
+        self.assertEqual(agenda_data["context"]["concise"], self.concise)
+        self.assertEqual(agenda_data["context"]["concise_sha256"], artifact_hash(self.concise))
+        self.assertNotIn("segments", agenda_data["bundle"])
+
     def test_only_agenda_has_one_to_three_limit(self):
         self.agenda["items"] *= 2
         self.assert_error("expected 1–3 items", validate_agenda(self.agenda, self.discussion, self.brief, self.bundle))
@@ -381,35 +496,33 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("Bob · 提问", rendered)
         self.assertIn("A shorter question.", rendered)
 
-    def test_concise_renderer_preserves_all_content_and_reply_relationships(self):
-        rendered = render_concise_markdown(self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
-        for topic, compact in zip(self.discussion["topics"], self.brief["topics"]):
-            for text in (compact["title"], compact["presentation"], compact["outcome"]):
-                self.assertIn(text, rendered)
-            for comment in compact["discussion"]:
-                self.assertIn(comment["summary"], rendered)
-            for issue in compact["unresolved"]:
-                self.assertIn(issue["summary"], rendered)
-            for issue in topic["unresolved"]:
-                for position in issue["positions"]:
-                    self.assertIn(f"{position['speaker']}：{position['view']}", rendered)
-            for proposal in compact["recorded_next_steps"]:
-                self.assertIn(proposal["proposal"], rendered)
-        for text in ("Alice 的分享", "Bob 的分享", "Bob提问（针对Alice的分享）", "Alice回应（针对Bob的提问）",
-                     "Bob质疑（针对Alice的回应）", "局部共识（Alice、Bob）", "未解决分歧", "开放问题"):
+    def test_concise_renderer_uses_three_compressed_fields_per_topic(self):
+        rendered = self.render(render_concise_markdown)
+        for topic in self.concise["topics"]:
+            for key in ("title", "presentation", "comments", "outcome"):
+                self.assertIn(topic[key], rendered)
+        for text in ("Alice 的分享", "Bob 的分享", "supervision remains disputed",
+                     "release date remains an open question"):
             self.assertIn(text, rendered)
-        # The entire reply chain shares a paragraph, retaining the original order.
-        first_chain = next(row for row in rendered.splitlines() if "Bob提问" in row)
-        self.assertLess(first_chain.index("Bob提问"), first_chain.index("Alice回应"))
-        self.assertLess(first_chain.index("Alice回应"), first_chain.index("Bob质疑"))
+        # Complete per-comment prose and future-plan records are deliberately not
+        # replayed. Their meaning is compressed into named main exchanges instead.
+        for topic in self.brief["topics"]:
+            for comment in topic["discussion"]:
+                self.assertNotIn(comment["summary"], rendered)
+            for step in topic["recorded_next_steps"]:
+                self.assertNotIn(step["proposal"], rendered)
         self.assertLess(rendered.index("Pilot cost and supervision"), rendered.index("Release calendar"))
-        self.assertLess(rendered.index("No date has been set."), rendered.index("## 下次讨论议题"))
+        self.assertLess(rendered.index("release date remains an open question"), rendered.index("## 下次讨论议题"))
+        body = rendered.split("## 下次讨论议题")[0]
+        detailed_body = render_markdown(self.discussion, self.coverage, self.brief, self.agenda,
+                                        self.bundle).split("## 下次讨论议题")[0]
+        self.assertLess(len(body), len(detailed_body) / 2)
         for item in self.agenda["items"]:
             self.assertIn(item["title"], rendered)
             self.assertIn(item["reason"], rendered)
 
     def test_concise_renderer_has_no_reference_or_audit_appendix(self):
-        rendered = render_concise_markdown(self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
+        rendered = self.render(render_concise_markdown)
         for text in ("[E1]", "S0002", "T1.C1", "T1.N1", "原文依据", "覆盖检查", "排除片段", "Source SHA-256",
                      "a" * 64, "Synthetic examples only.", "> Our pilot should track cost."):
             self.assertNotIn(text, rendered)
@@ -418,14 +531,38 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("[E1]", referenced)
         self.assertIn("原文依据", referenced)
 
-    def test_concise_renderer_preserves_deferred_proposals_and_labels_derived_agenda(self):
+    def test_long_exchange_is_semantically_condensed_before_rendering(self):
+        # A long, repetitive conversation remains complete in the evidence view,
+        # while the authored concise record groups the main exchange and result.
+        topic = self.discussion["topics"][0]
+        for i in range(4, 24):
+            topic["discussion"].append({"id": f"T1.C{i}", "speaker": "Bob", "kind": "addition",
+                "reply_to": "T1.C3", "summary": f"Bob repeated supervision point {i} with another example.",
+                "evidence": [{"segment_id": "S0005", "quote": "I still prefer no supervision."}]})
+        self.coverage["discussion_sha256"] = artifact_hash(self.discussion)
+        self.brief["topics"][0]["discussion"] = [{"id": item["id"], "summary": item["summary"]}
+                                                 for item in topic["discussion"]]
+        self.brief.update(discussion_sha256=artifact_hash(self.discussion), coverage_sha256=artifact_hash(self.coverage))
+        self.concise.update(discussion_sha256=artifact_hash(self.discussion), brief_sha256=artifact_hash(self.brief))
+        self.agenda.update(discussion_sha256=artifact_hash(self.discussion), brief_sha256=artifact_hash(self.brief))
+        concise = self.render(render_concise_markdown).split("## 下次讨论议题")[0]
+        detailed = self.render(render_markdown).split("## 下次讨论议题")[0]
+        self.assertLess(len(concise), len(detailed) / 3)
+        self.assertIn("Alice wants it until the audit", concise)
+        self.assertIn("Bob still wants it removed", concise)
+        self.assertIn("agreed only on cost tracking", concise)
+        self.assertIn("supervision remains disputed", concise)
+        self.assertNotIn("repeated supervision point", concise)
+        self.assertIn("Bob repeated supervision point 23", detailed)
+
+    def test_concise_renderer_omits_proposal_replay_and_labels_derived_agenda(self):
         self.agenda["items"][1].update(
             kind="synthesizer_suggestion", recorded_proposal_id=None,
             title="Compare supervision approaches.", based_on=["T1", "T1.U1"],
             reason="Resolve the open supervision difference.")
         self.agenda["deferred_recorded_proposals"] = [{"proposal_id": "T2.N1", "reason": "Budget first."}]
-        rendered = render_concise_markdown(self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
-        self.assertIn("Bob：Discuss scheduling.", rendered)
+        rendered = self.render(render_concise_markdown)
+        self.assertNotIn("Discuss scheduling.", rendered)
         self.assertIn("会上已有提议：Budget", rendered)
         self.assertIn("总结者延伸建议：Compare supervision approaches.", rendered)
         self.assertIn("（Alice提议）", rendered)
@@ -435,31 +572,34 @@ class ReviewTests(unittest.TestCase):
         self.coverage["status"] = "revise"
         for renderer in (render_markdown, render_concise_markdown):
             with self.subTest(renderer=renderer.__name__), self.assertRaisesRegex(ValueError, "failed validation"):
-                renderer(self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
+                self.render(renderer)
 
     def test_markdown_and_html_source_are_escaped(self):
         malicious = "![image](https://invalid.example/x) <script>bad()</script>"
         self.discussion["topics"][0]["title"] = malicious
         self.brief["topics"][0]["title"] = malicious
+        self.concise["topics"][0]["title"] = malicious
         self.coverage["discussion_sha256"] = artifact_hash(self.discussion)
         self.brief.update(discussion_sha256=artifact_hash(self.discussion), coverage_sha256=artifact_hash(self.coverage))
         self.agenda.update(discussion_sha256=artifact_hash(self.discussion), brief_sha256=artifact_hash(self.brief))
+        self.concise.update(discussion_sha256=artifact_hash(self.discussion), brief_sha256=artifact_hash(self.brief))
         for renderer in (render_markdown, render_concise_markdown):
             with self.subTest(renderer=renderer.__name__):
-                rendered = renderer(self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
+                rendered = self.render(renderer)
                 self.assertNotIn("![image]", rendered)
                 self.assertNotIn("<script>", rendered)
                 self.assertIn(r"\!\[image\]", rendered)
 
     def test_unknown_date_is_preserved(self):
-        for artifact in (self.bundle, self.discussion, self.coverage, self.brief, self.agenda):
+        for artifact in (self.bundle, self.discussion, self.coverage, self.brief, self.concise, self.agenda):
             artifact["meeting"]["date"] = None
         self.coverage["discussion_sha256"] = artifact_hash(self.discussion)
         self.brief.update(discussion_sha256=artifact_hash(self.discussion), coverage_sha256=artifact_hash(self.coverage))
         self.agenda.update(discussion_sha256=artifact_hash(self.discussion), brief_sha256=artifact_hash(self.brief))
+        self.concise.update(discussion_sha256=artifact_hash(self.discussion), brief_sha256=artifact_hash(self.brief))
         for renderer in (render_markdown, render_concise_markdown):
             with self.subTest(renderer=renderer.__name__):
-                self.assertIn("会议日期：未记录", renderer(self.discussion, self.coverage, self.brief, self.agenda, self.bundle))
+                self.assertIn("会议日期：未记录", self.render(renderer))
 
     def test_arbitrary_malformed_inputs_fail_closed_without_raising(self):
         invalid = (None, [], False, 0, "bad", {}, {"schema_version": True})
@@ -472,13 +612,17 @@ class ReviewTests(unittest.TestCase):
                 self.assertTrue(validate_brief(value, self.discussion, self.coverage, self.bundle))
                 self.assertTrue(validate_brief(self.brief, value, self.coverage, self.bundle))
                 self.assertTrue(validate_brief(self.brief, self.discussion, value, self.bundle))
+                self.assertTrue(validate_concise(value, self.discussion, self.coverage, self.brief, self.bundle))
+                self.assertTrue(validate_concise(self.concise, value, self.coverage, self.brief, self.bundle))
+                self.assertTrue(validate_concise(self.concise, self.discussion, value, self.brief, self.bundle))
+                self.assertTrue(validate_concise(self.concise, self.discussion, self.coverage, value, self.bundle))
                 self.assertTrue(validate_agenda(value, self.discussion, self.brief, self.bundle))
                 self.assertTrue(validate_agenda(self.agenda, value, self.brief, self.bundle))
                 self.assertTrue(validate_agenda(self.agenda, self.discussion, value, self.bundle))
 
     def test_malformed_nested_values_do_not_raise(self):
         mutations = (None, [], {}, False, 1, "")
-        for i, artifact in enumerate((self.discussion, self.coverage, self.brief, self.agenda)):
+        for i, artifact in enumerate((self.discussion, self.coverage, self.brief, self.agenda, self.concise)):
             for key in artifact:
                 for value in mutations:
                     broken = copy.deepcopy(artifact)
@@ -487,13 +631,24 @@ class ReviewTests(unittest.TestCase):
                         errors = (validate_discussion(broken, self.bundle) if i == 0 else
                                   validate_coverage(broken, self.discussion, self.bundle) if i == 1 else
                                   validate_brief(broken, self.discussion, self.coverage, self.bundle) if i == 2 else
-                                  validate_agenda(broken, self.discussion, self.brief, self.bundle))
+                                  validate_agenda(broken, self.discussion, self.brief, self.bundle) if i == 3 else
+                                  validate_concise(broken, self.discussion, self.coverage, self.brief, self.bundle))
                         self.assertIsInstance(errors, list)
         for field in self.discussion["topics"][0]:
             for value in mutations:
                 broken = copy.deepcopy(self.discussion)
                 broken["topics"][0][field] = value
                 self.assertIsInstance(validate_discussion(broken, self.bundle), list)
+        for field in self.concise["topics"][0]:
+            for value in mutations:
+                broken = copy.deepcopy(self.concise)
+                broken["topics"][0][field] = value
+                self.assertIsInstance(self.concise_errors(broken), list)
+        for field in ("discussion", "unresolved"):
+            for value in mutations:
+                broken = copy.deepcopy(self.discussion)
+                broken["topics"][0][field][0]["id"] = value
+                self.assertTrue(validate_concise(self.concise, broken, self.coverage, self.brief, self.bundle))
 
     def test_duplicate_source_ids_and_bad_source_types(self):
         self.bundle["segments"].append(copy.deepcopy(self.bundle["segments"][0]))

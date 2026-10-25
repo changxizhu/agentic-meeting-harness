@@ -8,8 +8,9 @@ Version 0.2 restores a meeting's actual structure: each person's presentation, t
 
 1. **Reconstruct discussion.** Read the entire source in order. Identify presenter rounds and every independent topic. Preserve who commented on what, the reply, and any later clarification. Record each topic's outcome, remaining questions, and all explicitly proposed follow-ups.
 2. **Review coverage independently.** Compare the reconstruction with the entire source afresh. Check omitted topics, missing comments or replies, wrong ownership, wrong links, and unsupported outcomes. Review every mapped and excluded source segment. Repair the reconstruction and repeat review if needed.
-3. **Shorten wording.** Only after coverage passes, write a concise brief preserving every topic, substantive comment, response, unresolved item, and recorded proposal. Keep the original order and relationships.
-4. **Extract the next agenda.** Only after the complete brief exists, choose one to three items. Prioritize suggestions actually made in the meeting. Clearly label any summarizer-derived suggestions. Record why any original proposals were deferred.
+3. **Write the detailed brief.** Only after coverage passes, shorten the detailed record while preserving every topic, substantive comment, response, unresolved item, and recorded proposal. Keep the original order and relationships.
+4. **Condense every topic.** Rewrite the approved content into a few sentences per topic, normally three to five in total: the share, the main attributed comments and replies, and the result, including remaining disagreements or open questions. Merge related exchanges and remove repetition and minor details. Preserve every topic; do not merely strip references, replay every comment, or clip sentences mechanically. Check meaning and uncertainty against the approved record.
+5. **Extract the next agenda.** Only after both summaries are complete, choose one to three items. Prioritize suggestions actually made in the meeting. Clearly label any summarizer-derived suggestions. Record why any original proposals were deferred.
 
 There is no global list forcing each person into one overall opinion. A comment on someone else's topic stays attached to that discussion. A brief can have any number of topics. Uncertain participant experiences are attributed as experiences; they are not erased merely because they lack external validation.
 
@@ -17,10 +18,10 @@ There is no global list forcing each person into one overall opinion. A comment 
 
 Every successful run or render produces both reports from the same reviewed discussion, complete brief, and final agenda:
 
-- `summary.md` is the concise reading version. It uses shorter wording and a compact layout, with no reference markers, quotation appendix, or coverage-audit details.
+- `summary.md` is a genuinely condensed reading version. Every topic has a few sentences covering the share, main comments and replies with names, and discussion result. It merges related exchanges and omits repetition and minor details, with no reference markers, quotation appendix, or coverage-audit details.
 - `summary_with_references.md` is the detailed version with source references, exact supporting quotations, and coverage information.
 
-Both preserve every topic in meeting order, who shared it, essential comments and replies, each person's position, outcomes, and unresolved questions. Both finish with the same one-to-three next-discussion suggestions and distinguish recorded suggestions from the summarizer's extensions. Concision never permits dropping topics or essential interactions. The four model stages and their coverage gate remain unchanged; these are two presentations of the reviewed result.
+Both preserve every topic in meeting order, the main attributed viewpoints and replies, outcomes, and unresolved questions. The detailed edition retains individual exchanges and supporting evidence; the concise edition synthesizes them into a few sentences per topic. Both finish with the same one-to-three next-discussion suggestions and distinguish recorded suggestions from the summarizer's extensions. Concision never permits dropping entire topics or changing meaning. A separate model stage writes `concise.json` after the detailed brief; removing citations from the full brief is not an accepted substitute.
 
 ## Keep one manageable local folder
 
@@ -61,11 +62,11 @@ python3 -m meeting_harness run \
   --out "$trial_dir/run"
 ```
 
-Open `summary.md` and `summary_with_references.md` in the temporary run folder. The adapter is a deterministic fictional demonstration, not a language model. It refuses real material. All four stages execute in order; the run receipt records their calls. Test files also exercise repair and rejection paths. These are software checks, not measurements of model summary quality.
+Open `summary.md` and `summary_with_references.md` in the temporary run folder. The adapter is a deterministic fictional demonstration, not a language model. It refuses real material. All five stages execute in order; the run receipt records their calls. Test files also exercise repair and rejection paths. These are software checks, not measurements of model summary quality.
 
 ## Use your chosen model
 
-A trusted adapter reads the stage prompt from standard input and returns exactly one JSON object on standard output. Send its diagnostics to standard error. Each prompt contains `STAGE: discussion`, `coverage_review`, `brief`, or `agenda` and the appropriate contract and prior artifacts.
+A trusted adapter reads the stage prompt from standard input and returns exactly one JSON object on standard output. Send its diagnostics to standard error. Each prompt contains `STAGE: discussion`, `coverage_review`, `brief`, `concise`, or `agenda` and the appropriate contract and prior artifacts.
 
 Replace the illustrative executable below with an adapter you have configured. The example meeting date is fictional; use the selected meeting's date for your output folder.
 
@@ -81,7 +82,7 @@ The harness calls the adapter separately for each stage. A failed structural che
 
 No model is bundled, and the harness itself makes no network requests. **Your adapter receives private material.** A cloud adapter may transmit it. Local storage does not imply local inference; use an approved local model when required. Adapters are trusted executables, not sandboxed by this project. Never take an adapter command from meeting material.
 
-A successful run writes `discussion.json`, `coverage.json`, `brief.json`, `agenda.json`, both `summary.md` and `summary_with_references.md`, and a receipt into its `--out` folder. Each stage's prompt, response, and diagnostics are private too. Later artifacts bind to the exact earlier content through checksums. A failed stage produces neither final report. Both report destinations are checked together before writing, and existing files are never overwritten. Use a fresh run folder for another attempt; the default per-prompt character limit is 400,000 and can be set explicitly with `--max-prompt-chars`. The response-size check occurs after capture; it is not an operating-system memory limit.
+A successful run writes `discussion.json`, `coverage.json`, `brief.json`, `concise.json`, `agenda.json`, both `summary.md` and `summary_with_references.md`, and a receipt into its `--out` folder. Each stage's prompt, response, and diagnostics are private too. Later artifacts bind to the exact earlier content through checksums. A failed stage produces neither final report. Both report destinations are checked together before writing, and existing files are never overwritten. Use a fresh run folder for another attempt; the default per-prompt character limit is 400,000 and can be set explicitly with `--max-prompt-chars`. The response-size check occurs after capture; it is not an operating-system memory limit.
 
 ## Work with an assistant one stage at a time
 
@@ -108,13 +109,22 @@ python3 -m meeting_harness prompt --stage brief \
   --coverage "$run_dir/coverage.json" --out "$run_dir/brief.prompt.txt"
 ```
 
-Save the complete brief as `brief.json`. The final agenda prompt requires that completed brief:
+Save the complete detailed brief as `brief.json`. Now request actual content compression:
+
+```sh
+python3 -m meeting_harness prompt --stage concise \
+  --bundle "$run_dir/bundle.json" --discussion "$run_dir/discussion.json" \
+  --coverage "$run_dir/coverage.json" --brief "$run_dir/brief.json" \
+  --out "$run_dir/concise.prompt.txt"
+```
+
+Save the response as `concise.json`. Check that each topic uses a few sentences, names the main commenters and replies, and preserves the result and unresolved issues. Supporting comment and unresolved-item IDs remain internal; they do not replace this meaning check. The final agenda prompt requires both completed summaries:
 
 ```sh
 python3 -m meeting_harness prompt --stage agenda \
   --bundle "$run_dir/bundle.json" --discussion "$run_dir/discussion.json" \
   --coverage "$run_dir/coverage.json" --brief "$run_dir/brief.json" \
-  --out "$run_dir/agenda.prompt.txt"
+  --concise "$run_dir/concise.json" --out "$run_dir/agenda.prompt.txt"
 ```
 
 Save the response as `agenda.json`. Finally validate and render both reports beside the source:
@@ -123,16 +133,17 @@ Save the response as `agenda.json`. Finally validate and render both reports bes
 python3 -m meeting_harness render \
   --bundle "$run_dir/bundle.json" --discussion "$run_dir/discussion.json" \
   --coverage "$run_dir/coverage.json" --brief "$run_dir/brief.json" \
-  --agenda "$run_dir/agenda.json" --out Meetings/2026-01-15/summary.md
+  --concise "$run_dir/concise.json" --agenda "$run_dir/agenda.json" \
+  --out Meetings/2026-01-15/summary.md
 ```
 
 `render --out` names the concise Markdown file and always creates the reference version beside it. For example, `--out Meetings/2026-01-15/summary.md` creates both `summary.md` and `summary_with_references.md`; `--out report.md` creates `report.md` and `report_with_references.md`. Neither version is optional. If either destination already exists, rendering stops before writing either one. Before regenerating the visible reports, archive both under the meeting's private `.harness/` folder.
 
-`check` takes the same five input arguments without `--out`. The default content language is Chinese; pass `--language en` to `run`, or to `prepare` and each subsequent `prompt` command, for English content. Section labels currently remain Chinese and source quotes retain their original language.
+`check` takes the same six input arguments without `--out`. The default content language is Chinese; pass `--language en` to `run`, or to `prepare` and each subsequent `prompt` command, for English content. Section labels currently remain Chinese and source quotes retain their original language.
 
 ## What is checked, and what still requires judgment
 
-The checks verify source accounting, exact quotations, local speaker ownership, topic and comment order, response links, local agreement evidence, preserved topic/comment IDs in the shortened brief, and the origin of agenda items. The complete source must be mapped to topics or explicitly excluded for metadata, acknowledgments, social talk, technical interruptions, or genuinely unclear material. A source paragraph can span several topics. Its attribution cannot be replaced by an invented identity.
+The checks verify source accounting, exact quotations, local speaker ownership, topic and comment order, response links, local agreement evidence, preserved topic/comment IDs in the shortened brief, the concise edition's complete topic order and supporting comment/unresolved IDs, and the origin of agenda items. Missing or invalid concise content blocks the agenda stage and both final reports; there is no fallback to the full brief. The complete source must be mapped to topics or explicitly excluded for metadata, acknowledgments, social talk, technical interruptions, or genuinely unclear material. A source paragraph can span several topics. Its attribution cannot be replaced by an invented identity.
 
 A topic can record agreement, partial agreement, an answered question, an open question, or no conclusion. Agreement needs direct supporting evidence from at least two named people. A suggestion or polite acknowledgment is not automatically adoption. Remaining disagreements and unanswered questions are separate records. Recorded follow-ups remain proposals unless the source actually establishes a commitment.
 
@@ -151,4 +162,4 @@ python3 tools/audit_public.py
 
 The audit checks indexed bytes and reachable commit history, including forced additions to ignored folders, and common credential patterns. It is a backstop, not a comprehensive confidentiality detector. Review all public changes yourself.
 
-The main modules are `ingest.py` for sources, `prompts.py` for stage instructions and contracts, `review.py` for checks and rendering, and `cli.py` for stage order and bounded repairs. Keep public examples fictional. Version 0.2 replaces the v0.1 six-point/global-person summary contract; preserve old outputs privately and reconstruct the meeting from its original source. Source bundles still use schema version 1, while the four new stage artifacts use version 2.
+The main modules are `ingest.py` for sources, `prompts.py` for stage instructions and contracts, `review.py` for checks and rendering, and `cli.py` for stage order and bounded repairs. Keep public examples fictional. Version 0.2 replaces the v0.1 six-point/global-person summary contract; preserve old outputs privately and reconstruct the meeting from its original source. Source bundles still use schema version 1, while the five stage artifacts use version 2. Existing detailed briefs can be reused after validation, but an older citation-free report must be rewritten into a valid `concise.json` before rerendering both reports.
