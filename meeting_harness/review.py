@@ -562,10 +562,7 @@ def render_markdown(discussion: dict, coverage: dict, brief: dict, agenda: dict,
             evidence = cite(original_proposal["evidence"])
         rows.append(f"- **{label}：{line(item['title'])}** {line(item['reason'])}{attribution} {evidence}".rstrip())
     if agenda["deferred_recorded_proposals"]:
-        rows.extend(["", "**未入选的会上提议及原因：**", ""])
-        for item in agenda["deferred_recorded_proposals"]:
-            proposal = proposal_by_id[item["proposal_id"]]
-            rows.append(f"- **{line(proposal['proposal'])}：** {line(item['reason'])} {cite(proposal['evidence'])}")
+        rows.extend(["", f"其余 {len(agenda['deferred_recorded_proposals'])} 条原有提议或个人计划保留在上文对应话题中，未列为本轮候选议题。", ""])
     rows.extend(["", "## 原文依据", ""])
     for i, (sid, quote) in enumerate(citations, 1):
         segment = segments[sid]
@@ -574,7 +571,8 @@ def render_markdown(discussion: dict, coverage: dict, brief: dict, agenda: dict,
         rows.extend("> " + _md(part) for part in quote.splitlines())
         rows.append("")
     rows.extend(["## 覆盖检查与局限", "", "- 已完成独立覆盖复核，并记录所有原文片段的归属或排除原因。", "- 自动检查可以核对结构、原文摘录、发言归属和前后版本关联；不能证明所有话题均已识别，也不能证明摘录支持总结的含义。覆盖复核仍需逐段判断。"])
-    rows.extend("- " + line(value) for value in discussion["limitations"])
+    rows.extend(["", "**完整重建记录中的范围说明与局限：**", ""])
+    rows.extend("> " + line(value) + "\n" for value in discussion["limitations"])
     if discussion["excluded_segments"]:
         rows.extend(["", "**排除片段记录：**", ""])
         for item in discussion["excluded_segments"]:
