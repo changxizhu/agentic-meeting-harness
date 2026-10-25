@@ -114,6 +114,18 @@ class IngestionWorkflowTests(unittest.TestCase):
         self.source("~$2026-12-31-locked.docx", "Not a real document")
         self.assertEqual(latest_source(self.folder), newest)
 
+    def test_adjacent_reports_and_hidden_run_files_do_not_compete_with_source(self) -> None:
+        newest = self.source("2026-10-21/transcript.txt", "Fictional review\nDate: 2026-10-21\nAlice: Hello.\n")
+        self.source("2026-10-21/summary.md", "Summary\nMeeting date: 2026-10-21\n")
+        self.source("2026-10-21/.harness/prompt.txt", "Private generated prompt without a meeting date.\n")
+        self.source("2026-10-21/.harness/bundle.json", "{}")
+        self.assertEqual(latest_source(self.folder), newest)
+
+    def test_legacy_adjacent_digest_is_ignored(self) -> None:
+        newest = self.source("2026-10-21/transcript.txt", "Fictional review\nDate: 2026-10-21\nAlice: Hello.\n")
+        self.source("2026-10-21/digest.md", "Summary\nMeeting date: 2026-12-31\n")
+        self.assertEqual(latest_source(self.folder), newest)
+
     def test_docx_extraction_includes_tables_and_preserves_body_order(self) -> None:
         source = self.folder / "2026-10-21-fictional.docx"
         document = '''<?xml version="1.0" encoding="UTF-8"?>

@@ -15,6 +15,9 @@ class HarnessError(ValueError):
 
 
 SUPPORTED = {".docx", ".md", ".txt"}
+# Reports live beside their source in a dated meeting folder. They must never
+# compete with that source when choosing the latest meeting.
+GENERATED_REPORT_NAMES = {"summary.md", "digest.md"}
 MAX_SOURCE_BYTES = 20_000_000
 MAX_XML_BYTES = 40_000_000
 NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -94,6 +97,7 @@ def latest_source(folder: Path) -> Path:
         raise HarnessError("Meetings folder does not exist.")
     candidates = sorted(p for p in folder.rglob("*") if p.is_file()
                         and p.suffix.lower() in SUPPORTED
+                        and p.name.lower() not in GENERATED_REPORT_NAMES
                         and not any(part.startswith(".") for part in p.relative_to(folder).parts)
                         and not p.name.startswith("~$"))
     if not candidates:

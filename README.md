@@ -19,35 +19,40 @@ Requires Python 3.11 or later. The runtime uses only the Python standard library
 ```sh
 python3 -m unittest discover -s tests -v
 
+demo_dir="$(mktemp -d)"
 python3 -m meeting_harness run \
   --source examples/2026-01-15-fictional.md \
   --command-json '["python3", "examples/fixture_model.py"]' \
-  --out ../meeting-harness-demo
+  --out "$demo_dir/run"
 ```
 
-Open `../meeting-harness-demo/digest.md`. The checked-in adapter is a deterministic **fictional demonstration**, not a language model. It rejects other sources. Choose a fresh output directory for every run; the harness does not overwrite previous runs.
+Open `digest.md` in the temporary run folder. This keeps demonstration output out of your project folders. The checked-in adapter is a deterministic **fictional demonstration**, not a language model. It rejects other sources. Choose a fresh output directory for every run; the harness does not overwrite previous runs.
 
 ## Use real meeting material privately
 
-Keep the source folder and output folder outside this public checkout:
+Keep everything under one parent folder. Only `harness/` is the public Git checkout; each meeting's original and finished summary stay together in its dated folder:
 
 ```text
 workspace/
-  meeting-harness/       public code and fictional examples
-  my-private-meetings/   original transcripts, never committed here
-  my-private-runs/       prompts, model responses, evidence, and briefs
+  AgenticMeetings/
+    harness/             public code and fictional examples
+    Meetings/
+      2026-01-15/
+        transcript.docx  private original
+        summary.md       private finished brief
+        .harness/        hidden private working files
 ```
 
-Prepare the latest meeting:
+Run the commands below from `harness/`. Prepare the latest meeting, using the selected meeting's date for its working folder (the example date is fictional):
 
 ```sh
 python3 -m meeting_harness prepare \
-  --meetings-dir ../my-private-meetings \
-  --out ../my-private-runs/run-001 \
+  --meetings-dir ../Meetings \
+  --out ../Meetings/2026-01-15/.harness/run-001 \
   --language en
 ```
 
-The harness reads `.docx`, `.md`, and `.txt`, including Word tables and common timestamped speaker labels. It chooses by the meeting date in the header or filename, never by file modification time. It stops on undated files, conflicting dates, or multiple latest sources so you can select `--source` explicitly. For a conflicting or missing date, select a source and optionally supply `--meeting-date YYYY-MM-DD`. Review the extracted speaker labels in `bundle.json`, especially with unfamiliar transcript formats. Audio transcription, scanned documents, and slide interpretation are outside this version.
+The harness reads `.docx`, `.md`, and `.txt`, including Word tables and common timestamped speaker labels. It chooses by the meeting date in the header or filename, never by file modification time. It ignores hidden working folders and reserves `summary.md` and `digest.md` for generated reports, so they are not mistaken for source meetings. Scan `../Meetings`, not its parent, which also contains project documentation. It stops on undated files, conflicting dates, or multiple latest sources so you can select `--source` explicitly. For a conflicting or missing date, select a source and optionally supply `--meeting-date YYYY-MM-DD`. Review the extracted speaker labels in `bundle.json`, especially with unfamiliar transcript formats. Audio transcription, scanned documents, and slide interpretation are outside this version.
 
 ### Work with an assistant
 
@@ -55,13 +60,13 @@ Give the private `prompt.txt` and `summary.schema.json` to an assistant approved
 
 ```sh
 python3 -m meeting_harness check \
-  --bundle ../my-private-runs/run-001/bundle.json \
-  --summary ../my-private-runs/run-001/summary.json
+  --bundle ../Meetings/2026-01-15/.harness/run-001/bundle.json \
+  --summary ../Meetings/2026-01-15/.harness/run-001/summary.json
 
 python3 -m meeting_harness render \
-  --bundle ../my-private-runs/run-001/bundle.json \
-  --summary ../my-private-runs/run-001/summary.json \
-  --out ../my-private-runs/run-001/digest.md
+  --bundle ../Meetings/2026-01-15/.harness/run-001/bundle.json \
+  --summary ../Meetings/2026-01-15/.harness/run-001/summary.json \
+  --out ../Meetings/2026-01-15/summary.md
 ```
 
 Use `--language zh` during preparation for Chinese summary content. Section labels currently remain in English. The source quotations retain their original language.
@@ -72,11 +77,13 @@ Use `--language zh` during preparation for Chinese summary content. Section labe
 
 ```sh
 python3 -m meeting_harness run \
-  --meetings-dir ../my-private-meetings \
-  --out ../my-private-runs/run-002 \
+  --meetings-dir ../Meetings \
+  --out ../Meetings/2026-01-15/.harness/run-002 \
   --command-json '["your-model-adapter", "--json"]' \
   --attempts 2 --timeout 300
 ```
+
+Automatic runs write `digest.md` inside the hidden working folder. Use the same `render` command above with `run-002` to place the finished brief beside its transcript as `summary.md`. When revising an existing brief, archive its previous `summary.md` inside `.harness/` before rendering the replacement; previous outputs are never overwritten.
 
 No model is bundled, and no cloud service is called by the harness itself. **The selected adapter receives the transcript.** A cloud adapter may transmit it; local storage does not mean local inference. Choose a local model adapter when material must remain on your machine. The adapter is a trusted executable, not sandboxed by this project; do not use a command taken from meeting material.
 
