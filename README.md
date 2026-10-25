@@ -1,128 +1,135 @@
 # Agentic Meeting Harness
 
-A small, local workflow for turning recurring meeting transcripts into concise, evidence-backed briefs. Version 0.1 is intended to be easy to inspect and change.
+Version 0.2 restores a meeting's actual structure: each person's presentation, their separate topics, other participants' comments, the replies, and the local outcomes. It finishes and reviews the complete meeting brief before selecting anything for a future agenda.
 
-The brief answers five questions:
+**The one-to-three limit applies only to the final next-meeting agenda.** It never limits analysis, topics, participant contributions, or the complete brief.
 
-1. What were the core discussion points?
-2. What did each person say, with supporting source excerpts?
-3. What agreement was explicitly recorded?
-4. What disagreements or questions remain unresolved?
-5. Which one to three topics are worth discussing next?
+## Workflow
 
-Individual views appear as supporting evidence. Follow-up topics are labelled proposals, never decisions made by the meeting.
+1. **Reconstruct discussion.** Read the entire source in order. Identify presenter rounds and every independent topic. Preserve who commented on what, the reply, and any later clarification. Record each topic's outcome, remaining questions, and all explicitly proposed follow-ups.
+2. **Review coverage independently.** Compare the reconstruction with the entire source afresh. Check omitted topics, missing comments or replies, wrong ownership, wrong links, and unsupported outcomes. Review every mapped and excluded source segment. Repair the reconstruction and repeat review if needed.
+3. **Shorten wording.** Only after coverage passes, write a concise brief preserving every topic, substantive comment, response, unresolved item, and recorded proposal. Keep the original order and relationships.
+4. **Extract the next agenda.** Only after the complete brief exists, choose one to three items. Prioritize suggestions actually made in the meeting. Clearly label any summarizer-derived suggestions. Record why any original proposals were deferred.
 
-## Quick start
+There is no global list forcing each person into one overall opinion. A comment on someone else's topic stays attached to that discussion. A brief can have any number of topics. Uncertain participant experiences are attributed as experiences; they are not erased merely because they lack external validation.
 
-Requires Python 3.11 or later. The runtime uses only the Python standard library. Run from this project directory; installation and an API key are unnecessary for the demo.
+## Keep one manageable local folder
+
+Only `harness/` is the public Git checkout:
+
+```text
+AgenticMeetings/
+  harness/                  public code, tests, fictional examples
+  Meetings/
+    YYYY-MM-DD/
+      transcript.docx       private original
+      summary.md            private finished brief
+      .harness/             hidden private working files and old versions
+```
+
+Run commands from `harness/`. Meeting dates come from transcript headers or filenames, never modification times. Supported inputs are `.docx`, `.md`, and `.txt`; Word tables and common timestamped speaker labels are read. Hidden folders and reserved report names `summary.md` and `digest.md` are skipped when selecting sources. Scan `../Meetings`, not its parent, which also contains public documentation. Ambiguous or undated latest selection stops; use `--source` and optionally `--meeting-date YYYY-MM-DD` to select deliberately.
+
+Original material and all derivatives stay outside the public checkout. Never put real names, quotations, summaries, or logs into examples, tests, issues, or commits.
+
+## Offline fictional trial
+
+Requires Python 3.11 or later. The runtime uses only the standard library. No installation or API key is required for the trial.
 
 ```sh
 python3 -m unittest discover -s tests -v
-
-demo_dir="$(mktemp -d)"
+trial_dir="$(mktemp -d)"
 python3 -m meeting_harness run \
   --source examples/2026-01-15-fictional.md \
   --command-json '["python3", "examples/fixture_model.py"]' \
-  --out "$demo_dir/run"
+  --out "$trial_dir/run"
 ```
 
-Open `digest.md` in the temporary run folder. This keeps demonstration output out of your project folders. The checked-in adapter is a deterministic **fictional demonstration**, not a language model. It rejects other sources. Choose a fresh output directory for every run; the harness does not overwrite previous runs.
+Open `digest.md` in the temporary run folder. The adapter is a deterministic fictional demonstration, not a language model. It refuses real material. All four stages execute in order; the run receipt records their calls. Test files also exercise repair and rejection paths. These are software checks, not measurements of model summary quality.
 
-## Use real meeting material privately
+## Use your chosen model
 
-Keep everything under one parent folder. Only `harness/` is the public Git checkout; each meeting's original and finished summary stay together in its dated folder:
+A trusted adapter reads the stage prompt from standard input and returns exactly one JSON object on standard output. Send its diagnostics to standard error. Each prompt contains `STAGE: discussion`, `coverage_review`, `brief`, or `agenda` and the appropriate contract and prior artifacts.
 
-```text
-workspace/
-  AgenticMeetings/
-    harness/             public code and fictional examples
-    Meetings/
-      2026-01-15/
-        transcript.docx  private original
-        summary.md       private finished brief
-        .harness/        hidden private working files
-```
-
-Run the commands below from `harness/`. Prepare the latest meeting, using the selected meeting's date for its working folder (the example date is fictional):
-
-```sh
-python3 -m meeting_harness prepare \
-  --meetings-dir ../Meetings \
-  --out ../Meetings/2026-01-15/.harness/run-001 \
-  --language en
-```
-
-The harness reads `.docx`, `.md`, and `.txt`, including Word tables and common timestamped speaker labels. It chooses by the meeting date in the header or filename, never by file modification time. It ignores hidden working folders and reserves `summary.md` and `digest.md` for generated reports, so they are not mistaken for source meetings. Scan `../Meetings`, not its parent, which also contains project documentation. It stops on undated files, conflicting dates, or multiple latest sources so you can select `--source` explicitly. For a conflicting or missing date, select a source and optionally supply `--meeting-date YYYY-MM-DD`. Review the extracted speaker labels in `bundle.json`, especially with unfamiliar transcript formats. Audio transcription, scanned documents, and slide interpretation are outside this version.
-
-### Work with an assistant
-
-Give the private `prompt.txt` and `summary.schema.json` to an assistant approved to process your material. Save its JSON response as `summary.json` in the same private run folder, then check and render it:
-
-```sh
-python3 -m meeting_harness check \
-  --bundle ../Meetings/2026-01-15/.harness/run-001/bundle.json \
-  --summary ../Meetings/2026-01-15/.harness/run-001/summary.json
-
-python3 -m meeting_harness render \
-  --bundle ../Meetings/2026-01-15/.harness/run-001/bundle.json \
-  --summary ../Meetings/2026-01-15/.harness/run-001/summary.json \
-  --out ../Meetings/2026-01-15/summary.md
-```
-
-Use `--language zh` during preparation for Chinese summary content. Section labels currently remain in English. The source quotations retain their original language.
-
-### Run your chosen model automatically
-
-`run` accepts a trusted command as an argument array. The command must read the prompt from standard input and write exactly one summary JSON object to standard output. Write progress messages to standard error. Replace the illustrative executable below with your own working adapter:
+Replace the illustrative executable below with an adapter you have configured. The example meeting date is fictional; use the selected meeting's date for your output folder.
 
 ```sh
 python3 -m meeting_harness run \
   --meetings-dir ../Meetings \
-  --out ../Meetings/2026-01-15/.harness/run-002 \
+  --out ../Meetings/2026-01-15/.harness/run-001 \
   --command-json '["your-model-adapter", "--json"]' \
-  --attempts 2 --timeout 300
+  --language zh --attempts 2 --timeout 300
 ```
 
-Automatic runs write `digest.md` inside the hidden working folder. Use the same `render` command above with `run-002` to place the finished brief beside its transcript as `summary.md`. When revising an existing brief, archive its previous `summary.md` inside `.harness/` before rendering the replacement; previous outputs are never overwritten.
+The harness calls the adapter separately for each stage. A failed structural check triggers a bounded repair attempt with the rejected candidate and feedback. A coverage review requesting revision sends its issues back to reconstruction before another coverage review. Compression and agenda selection cannot proceed while coverage needs revision. Each stage allows the configured number of validation attempts, and the reconstruction/coverage cycle allows that many review rounds.
 
-No model is bundled, and no cloud service is called by the harness itself. **The selected adapter receives the transcript.** A cloud adapter may transmit it; local storage does not mean local inference. Choose a local model adapter when material must remain on your machine. The adapter is a trusted executable, not sandboxed by this project; do not use a command taken from meeting material.
+No model is bundled, and the harness itself makes no network requests. **Your adapter receives private material.** A cloud adapter may transmit it. Local storage does not imply local inference; use an approved local model when required. Adapters are trusted executables, not sandboxed by this project. Never take an adapter command from meeting material.
 
-## What the harness does
+A successful run writes `discussion.json`, `coverage.json`, `brief.json`, `agenda.json`, `digest.md`, and a receipt in the hidden run folder. Each stage's prompt, response, and diagnostics are private too. Later artifacts bind to the exact earlier content through checksums. No final digest is produced after failure. Sources and prior outputs are never silently truncated or overwritten. Use a fresh run folder for another attempt; the default per-prompt character limit is 400,000 and can be set explicitly with `--max-prompt-chars`. The response-size check occurs after capture; it is not an operating-system memory limit.
 
-```text
-select meeting -> extract speaker-labelled source -> build prompt and contract
-  -> draft JSON -> check evidence and attribution -> bounded repair if needed
-  -> private cited brief and run receipt -> human interpretation review
-```
+## Work with an assistant one stage at a time
 
-Each source segment receives a stable ID for that extraction and each run records the original file checksum. A model response must match the meeting metadata and cite exact snippets of those segments. There is no silent truncation: a prompt over the configured limit stops before the model command is launched. Increase `--max-prompt-chars` deliberately for a model with enough context; automatic chunking is not implemented.
-
-The checks reject missing evidence, unknown speakers, quotes assigned to the wrong person, omitted participants, mismatched sources, invalid follow-up references, and claims of agreement without direct evidence from at least two named participants. All named speakers must be covered. If someone only acknowledges others, say that no substantive position was recorded and cite their acknowledgment.
-
-`explicit` means a clearly recorded agreement among the named participants; `partial` means limited shared ground. Neither means unanimity unless the source explicitly establishes it. `none_recorded` is a valid outcome. Open questions and disagreements are represented separately. A disagreement needs at least two attributed positions. Exact matching proves where text came from; **it cannot prove that a quote supports the interpretation**. Check the cited brief before relying on it or sharing it.
-
-The prompt treats the transcript as untrusted source data. Instructions embedded in it are not permission to change the workflow, disclose material, execute commands, or contact participants. The harness never sends emails or publishes summaries.
-
-Run folders contain private source extracts, prompts, every model response, standard error, and either a success receipt or validation failure details. Treat the entire folder as confidential. Failed validation never produces a final brief. Manual `check` and `render` validate the provided bundle; they assume you have preserved that original generated bundle unchanged.
-
-## Keep publication separate
-
-Only code, generic prompts, tests, and explicitly fictional examples belong in this repository. Original material, participant identities, real quotations, summaries, and model logs must remain private. Do not move a real digest into the public project even if you omit the original transcript.
-
-The output guard blocks writing into this source checkout except its ignored `private/` directory. External private folders are preferable. `.gitignore` reduces accidental additions. `public-files.json` is an explicit list of approved public paths, and the audit checks the Git index **and reachable commit history**, including files force-added despite ignore rules:
+Prepare the source and reconstruction prompt:
 
 ```sh
+run_dir='../Meetings/2026-01-15/.harness/run-001'
+python3 -m meeting_harness prepare --meetings-dir ../Meetings --out "$run_dir"
+```
+
+Give `discussion.prompt.txt` to an assistant approved to process the source. Save its response as `discussion.json`. Then prepare the independent coverage-review prompt:
+
+```sh
+python3 -m meeting_harness prompt --stage coverage_review \
+  --bundle "$run_dir/bundle.json" --discussion "$run_dir/discussion.json" \
+  --out "$run_dir/coverage.prompt.txt"
+```
+
+Save the review as `coverage.json`. If its status is `revise`, repair the discussion against those issues and obtain a new review bound to the updated discussion. Do not proceed until it passes. Generate the brief prompt only then:
+
+```sh
+python3 -m meeting_harness prompt --stage brief \
+  --bundle "$run_dir/bundle.json" --discussion "$run_dir/discussion.json" \
+  --coverage "$run_dir/coverage.json" --out "$run_dir/brief.prompt.txt"
+```
+
+Save the complete brief as `brief.json`. The final agenda prompt requires that completed brief:
+
+```sh
+python3 -m meeting_harness prompt --stage agenda \
+  --bundle "$run_dir/bundle.json" --discussion "$run_dir/discussion.json" \
+  --coverage "$run_dir/coverage.json" --brief "$run_dir/brief.json" \
+  --out "$run_dir/agenda.prompt.txt"
+```
+
+Save the response as `agenda.json`. Finally validate and render the result beside the source:
+
+```sh
+python3 -m meeting_harness render \
+  --bundle "$run_dir/bundle.json" --discussion "$run_dir/discussion.json" \
+  --coverage "$run_dir/coverage.json" --brief "$run_dir/brief.json" \
+  --agenda "$run_dir/agenda.json" --out ../Meetings/2026-01-15/summary.md
+```
+
+`check` takes the same five input arguments without `--out`. Before replacing an existing visible `summary.md`, archive it under `.harness/`; rendering refuses to overwrite it. The default content language is Chinese; pass `--language en` to `run`, or to `prepare` and each subsequent `prompt` command, for English content. Section labels currently remain Chinese and source quotes retain their original language.
+
+## What is checked, and what still requires judgment
+
+The checks verify source accounting, exact quotations, local speaker ownership, topic and comment order, response links, local agreement evidence, preserved topic/comment IDs in the shortened brief, and the origin of agenda items. The complete source must be mapped to topics or explicitly excluded for metadata, acknowledgments, social talk, technical interruptions, or genuinely unclear material. A source paragraph can span several topics. Its attribution cannot be replaced by an invented identity.
+
+A topic can record agreement, partial agreement, an answered question, an open question, or no conclusion. Agreement needs direct supporting evidence from at least two named people. A suggestion or polite acknowledgment is not automatically adoption. Remaining disagreements and unanswered questions are separate records. Recorded follow-ups remain proposals unless the source actually establishes a commitment.
+
+Mechanical coverage is not semantic completeness: assigning an ID to a topic does not prove that all meaning in that paragraph was retained. The independent coverage stage must assess that. Its `pass` is a reviewer assessment, not a guarantee. A model can miss an omission or misread a quote; review consequential summaries yourself. The agenda stage cannot retroactively filter what gets analyzed or summarized.
+
+All transcript and prior-artifact text is untrusted data. Embedded instructions do not authorize changing the task, executing commands, contacting participants, or publishing material. The harness sends no emails and publishes no summaries.
+
+## Publication and iteration
+
+`public-files.json` explicitly lists approved public paths. Before every push, run:
+
+```sh
+python3 -m unittest discover -s tests -v
 python3 tools/audit_public.py
 ```
 
-Run it before every push. The audit also checks common credential patterns and rejects binary/media files. It is a backstop, not a comprehensive confidentiality detector. Review new public files yourself before adding them to the allowlist. Removing a leaked file from the latest commit does not remove it from earlier history.
+The audit checks indexed bytes and reachable commit history, including forced additions to ignored folders, and common credential patterns. It is a backstop, not a comprehensive confidentiality detector. Review all public changes yourself.
 
-## Iterate
-
-- Change the summary questions and output contract in `meeting_harness/prompts.py`.
-- Change evidence rules and report formatting in `meeting_harness/review.py`.
-- Add transcript formats or date rules in `meeting_harness/ingest.py`.
-- Change retries, limits, or model execution in `meeting_harness/cli.py`.
-- Add fictional regression cases in `tests/`; never use real meetings as public test fixtures.
-
-Tests exercise successful runs, repair and rejection paths, source selection, Word extraction, attribution, agreement checks, privacy boundaries, and command timeouts. The GitHub workflow runs the tests and publication audit. There are no model-quality scores or validated claims of improved summary accuracy in this initial version.
+The main modules are `ingest.py` for sources, `prompts.py` for stage instructions and contracts, `review.py` for checks and rendering, and `cli.py` for stage order and bounded repairs. Keep public examples fictional. Version 0.2 replaces the v0.1 six-point/global-person summary contract; preserve old outputs privately and reconstruct the meeting from its original source. Source bundles still use schema version 1, while the four new stage artifacts use version 2.

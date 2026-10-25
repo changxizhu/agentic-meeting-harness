@@ -6,6 +6,7 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -14,9 +15,13 @@ from zipfile import ZipFile
 
 from meeting_harness.cli import private_destination, write_private
 from meeting_harness.ingest import HarnessError, latest_source, make_bundle, read_paragraphs
+from meeting_harness.prompts import build_prompt, schema_for
+from meeting_harness.review import artifact_hash
 
 
 PROJECT = Path(__file__).resolve().parents[1]
+EXAMPLE = PROJECT / "examples" / "2026-01-15-fictional.md"
+FIXTURE = runpy.run_path(str(PROJECT / "examples" / "fixture_model.py"))
 FICTIONAL_SOURCE = """Fictional agent review
 Date: 2026-10-21
 Alice: I support a small pilot, but require approval for external actions.
@@ -25,33 +30,14 @@ Alice: The approval rule remains unresolved.
 """
 
 
-def fictional_summary(bundle: dict) -> dict:
-    def ev(segment_id: str, quote: str) -> dict:
-        return {"segment_id": segment_id, "quote": quote}
-
-    alice = ev("S0003", "I support a small pilot, but require approval for external actions.")
-    bob = ev("S0004", "I support a small pilot. I prefer approval only for irreversible actions.")
-    return {
-        "schema_version": 1,
-        "meeting": {key: bundle["meeting"][key] for key in ("title", "date", "source_sha256")},
-        "core_points": [{"id": "C1", "point": "A small pilot was supported; approval rules remain unresolved.",
-                         "evidence": [alice, bob]}],
-        "participant_views": [
-            {"speaker": "Alice", "view": "Supports a pilot with approval for external actions.", "evidence": [alice]},
-            {"speaker": "Bob", "view": "Supports a pilot with approval for irreversible actions.", "evidence": [bob]},
-        ],
-        "consensus": {"status": "partial", "summary": "Both speakers support a small pilot.",
-                      "participants": ["Alice", "Bob"], "evidence": [alice, bob]},
-        "unresolved": [{"issue": "Which actions require approval?", "status": "disagreement",
-                        "positions": [
-                            {"speaker": "Alice", "view": "Require approval for external actions.", "evidence": [alice]},
-                            {"speaker": "Bob", "view": "Require approval for irreversible actions.", "evidence": [bob]},
-                        ], "evidence": [ev("S0005", "The approval rule remains unresolved.")]}],
-        "next_discussion": [{"question": "Which concrete pilot actions require approval?",
-                             "why": "A shared rule is still unresolved.", "based_on": ["C1", "U1"],
-                             "kind": "proposal"}],
-        "limitations": ["Fictional test material; no real participants or meeting content."],
-    }
+def fictional_artifacts(bundle: dict) -> dict:
+    """Use the public offline example without reading any actual meeting."""
+    context = {}
+    for stage, name in (("discussion", "discussion"), ("coverage_review", "coverage"),
+                        ("brief", "brief"), ("agenda", "agenda")):
+        context[name] = FIXTURE["stage_output"](stage, bundle, context)
+        context[name + "_sha256"] = artifact_hash(context[name])
+    return context
 
 
 class IngestionWorkflowTests(unittest.TestCase):
@@ -184,139 +170,301 @@ class CommandWorkflowTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.folder = Path(self.temp.name)
-        self.source = self.folder / "2026-10-21-fictional.txt"
-        self.source.write_text(FICTIONAL_SOURCE, encoding="utf-8")
+        self.source = self.folder / EXAMPLE.name
+        self.source.write_bytes(EXAMPLE.read_bytes())
         self.bundle = make_bundle(self.source)
-        self.summary = fictional_summary(self.bundle)
+        self.artifacts = fictional_artifacts(self.bundle)
 
     def cli(self, *args: object) -> subprocess.CompletedProcess[str]:
         return subprocess.run([sys.executable, "-m", "meeting_harness", *map(str, args)], cwd=PROJECT,
-                              capture_output=True, text=True, timeout=15, check=False)
+                              capture_output=True, text=True, timeout=20, check=False)
 
     def json_file(self, name: str, value: object) -> Path:
         target = self.folder / name
         target.write_text(json.dumps(value), encoding="utf-8")
         return target
 
-    def adapter(self, mode: str, summary: dict | None = None) -> Path:
+    def artifact_flags(self, artifacts: dict | None = None, bundle: dict | None = None) -> list[str]:
+        values = self.artifacts if artifacts is None else artifacts
+        flags = ["--bundle", str(self.json_file("bundle-input.json", self.bundle if bundle is None else bundle))]
+        for name in ("discussion", "coverage", "brief", "agenda"):
+            flags.extend(["--" + name, str(self.json_file(name + "-input.json", values[name]))])
+        return flags
+
+    def adapter(self, mode: str) -> Path:
         target = self.folder / f"adapter-{mode}.py"
-        payload = json.dumps(self.summary if summary is None else summary)
         target.write_text(
-            "import json, pathlib, sys, time\n"
-            "prompt = sys.stdin.read()\n"
-            "if 'UNTRUSTED SOURCE BUNDLE (JSON DATA):' not in prompt: sys.exit(8)\n"
+            "import json, pathlib, runpy, sys, time\n"
+            f"fixture = runpy.run_path({str(PROJECT / 'examples' / 'fixture_model.py')!r})\n"
+            "stage, payload = fixture['parse_prompt'](sys.stdin.read())\n"
             "state = pathlib.Path(__file__).with_suffix('.calls.json')\n"
             "calls = json.loads(state.read_text()) if state.exists() else []\n"
-            "calls.append({'feedback': 'VALIDATION FEEDBACK' in prompt, 'previous': 'Previous invalid JSON candidate' in prompt})\n"
+            "calls.append({'stage': stage, 'feedback': bool(payload['validation_feedback']), "
+            "'context_keys': sorted(payload['context']), 'segments_present': 'segments' in payload['bundle']})\n"
             "state.write_text(json.dumps(calls))\n"
+            "count = sum(c['stage'] == stage for c in calls)\n"
             f"mode = {mode!r}\n"
             "if mode == 'timeout': time.sleep(3)\n"
             "if mode == 'exit': print('fictional diagnostic', file=sys.stderr); sys.exit(7)\n"
-            "if mode == 'invalid' or (mode == 'repair' and len(calls) == 1): print('{invalid json')\n"
-            f"else: print({payload!r})\n", encoding="utf-8")
+            "if mode == 'invalid' or (mode == 'repair' and stage == 'discussion' and count == 1):\n"
+            "    print('{invalid json'); sys.exit(0)\n"
+            "value = fixture['stage_output'](stage, payload['bundle'], payload['context'])\n"
+            "if stage == 'coverage_review' and (mode == 'coverage-always' or (mode == 'coverage-once' and count == 1)):\n"
+            "    value['status'] = 'revise'\n"
+            "    value['issues'] = [{'kind': 'missing_comment', 'topic_id': 'T2', 'segment_ids': ['S0005'], 'detail': 'Recheck Casey timing comment against the source.'}]\n"
+            "if mode == 'missing-topic' and stage == 'brief' and count == 1: value['topics'].pop()\n"
+            "if mode == 'missing-comment' and stage == 'brief' and count == 1: value['topics'][1]['discussion'].pop()\n"
+            "if mode == 'attribution' and stage == 'discussion': value['topics'][0]['presentation']['evidence'] = value['topics'][0]['discussion'][0]['evidence']\n"
+            "print(json.dumps(value))\n", encoding="utf-8")
         return target
 
-    def run_adapter(self, mode: str, *, attempts: int = 2, summary: dict | None = None,
+    def run_adapter(self, mode: str, *, attempts: int = 2,
                     extra: tuple[str, ...] = ()) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
-        adapter = self.adapter(mode, summary)
+        adapter = self.adapter(mode)
         out = self.folder / f"run-{mode}"
         result = self.cli("run", "--source", self.source, "--out", out, "--attempts", attempts,
                           "--command-json", json.dumps([sys.executable, str(adapter)]), *extra)
         return result, out, adapter
+
+    def calls(self, adapter: Path) -> list[dict]:
+        return json.loads(adapter.with_suffix(".calls.json").read_text())
+
+    def stages(self, adapter: Path) -> list[str]:
+        return [call["stage"] for call in self.calls(adapter)]
 
     def test_prepare_check_render_complete_workflow(self) -> None:
         out = self.folder / "prepared"
         result = self.cli("prepare", "--source", self.source, "--out", out, "--language", "zh")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(set(path.name for path in out.iterdir()),
-                         {"bundle.json", "prompt.txt", "summary.schema.json", "prepared.json"})
+                         {"bundle.json", "discussion.prompt.txt", "discussion.schema.json", "prepared.json"})
         self.assertEqual(json.loads((out / "bundle.json").read_text()), self.bundle)
-        self.assertIn("Chinese (简体中文)", (out / "prompt.txt").read_text())
+        self.assertIn("Chinese (简体中文)", (out / "discussion.prompt.txt").read_text())
         self.assertEqual((out / "bundle.json").stat().st_mode & 0o777, 0o600)
-        summary = self.json_file("summary.json", self.summary)
-        result = self.cli("check", "--bundle", out / "bundle.json", "--summary", summary)
+        flags = self.artifact_flags()
+        result = self.cli("check", *flags)
         self.assertEqual(result.returncode, 0, result.stderr)
         rendered = self.folder / "digest.md"
-        result = self.cli("render", "--bundle", out / "bundle.json", "--summary", summary, "--out", rendered)
+        result = self.cli("render", *flags, "--out", rendered)
         self.assertEqual(result.returncode, 0, result.stderr)
         text = rendered.read_text()
-        for required in ("Core discussion", "Participant views", "Agreement", "Unresolved", "For next discussion", "Evidence appendix"):
+        for required in ("完整会议讨论", "评论与回应", "讨论结果", "分歧与开放问题", "下次讨论议题", "原文依据"):
             self.assertIn(required, text)
         self.assertIn("S0003", text)
-        self.assertIn("Both speakers support a small pilot.", text)
+        self.assertIn("Alex and Blair support a small workshop", text)
+        self.assertLess(text.index("Workshop timing"), text.index("下次讨论议题"))
 
-    def test_run_valid_adapter_succeeds_and_records_review_limit(self) -> None:
+    def test_run_only_calls_agenda_after_coverage_and_complete_brief(self) -> None:
         result, out, adapter = self.run_adapter("success")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads((out / "summary.json").read_text()), self.summary)
+        self.assertEqual(self.stages(adapter), ["discussion", "coverage_review", "brief", "agenda"])
+        for name in ("discussion", "coverage", "brief", "agenda"):
+            self.assertEqual(json.loads((out / (name + ".json")).read_text()), self.artifacts[name])
         receipt = json.loads((out / "receipt.json").read_text())
-        self.assertEqual(receipt["status"], "traceability_passed")
-        self.assertEqual(receipt["semantic_review"], "human_review_required")
-        self.assertEqual(len(receipt["attempts"]), 1)
+        self.assertEqual(receipt["status"], "ordered_workflow_completed")
+        self.assertEqual(receipt["stage_order"], self.stages(adapter))
+        self.assertEqual(receipt["topic_count"], 2)
+        self.assertIn("not proof", receipt["review_limits"])
         self.assertTrue((out / "digest.md").exists())
         self.assertFalse((out / "failure.json").exists())
-        self.assertEqual(json.loads(adapter.with_suffix(".calls.json").read_text()),
-                         [{"feedback": False, "previous": False}])
+        self.assertEqual([call["segments_present"] for call in self.calls(adapter)], [True, True, True, False])
 
     def test_run_repairs_malformed_first_response_with_feedback(self) -> None:
         result, out, adapter = self.run_adapter("repair")
         self.assertEqual(result.returncode, 0, result.stderr)
-        receipt = json.loads((out / "receipt.json").read_text())
-        self.assertEqual(len(receipt["attempts"]), 2)
-        self.assertTrue(receipt["attempts"][0]["errors"])
-        self.assertEqual(receipt["attempts"][1]["errors"], [])
-        self.assertEqual(json.loads(adapter.with_suffix(".calls.json").read_text()),
-                         [{"feedback": False, "previous": False}, {"feedback": True, "previous": True}])
+        self.assertEqual(self.stages(adapter), ["discussion", "discussion", "coverage_review", "brief", "agenda"])
+        records = json.loads((out / "receipt.json").read_text())["attempts"]
+        self.assertTrue(records[0]["errors"])
+        self.assertEqual(records[1]["errors"], [])
+        self.assertFalse(self.calls(adapter)[0]["feedback"])
+        self.assertTrue(self.calls(adapter)[1]["feedback"])
+        self.assertIn("previous_candidate", self.calls(adapter)[1]["context_keys"])
+
+    def test_coverage_revision_repairs_discussion_before_shortening(self) -> None:
+        result, out, adapter = self.run_adapter("coverage-once")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.stages(adapter), ["discussion", "coverage_review", "discussion", "coverage_review", "brief", "agenda"])
+        repaired = self.calls(adapter)[2]
+        self.assertIn("coverage_feedback", repaired["context_keys"])
+        self.assertIn("previous_discussion", repaired["context_keys"])
+        records = json.loads((out / "receipt.json").read_text())["attempts"]
+        self.assertEqual(records[2]["stage"], "coverage_revision")
+
+    def test_persistent_coverage_revision_never_calls_brief_or_agenda(self) -> None:
+        result, out, adapter = self.run_adapter("coverage-always")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.stages(adapter), ["discussion", "coverage_review", "discussion", "coverage_review"])
+        self.assertIn("Coverage review", result.stderr)
+        self.assertFalse((out / "brief.json").exists())
+        self.assertFalse((out / "agenda.json").exists())
+        self.assertFalse((out / "digest.md").exists())
+        self.assertTrue((out / "failure.json").exists())
+
+    def test_brief_cannot_drop_a_topic_or_comment_and_is_repaired_before_agenda(self) -> None:
+        for mode in ("missing-topic", "missing-comment"):
+            with self.subTest(mode=mode):
+                result, out, adapter = self.run_adapter(mode)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.stages(adapter), ["discussion", "coverage_review", "brief", "brief", "agenda"])
+                records = json.loads((out / "receipt.json").read_text())["attempts"]
+                self.assertTrue(records[2]["errors"])
+                self.assertTrue(any("preserve every" in error for error in records[2]["errors"]))
+                self.assertEqual(records[3]["errors"], [])
+                self.assertEqual(json.loads((out / "brief.json").read_text()), self.artifacts["brief"])
 
     def test_permanent_invalid_response_stops_without_final_digest(self) -> None:
-        result, out, _ = self.run_adapter("invalid")
+        result, out, adapter = self.run_adapter("invalid")
         self.assertEqual(result.returncode, 2)
         failure = json.loads((out / "failure.json").read_text())
-        self.assertEqual(failure["status"], "failed_validation")
+        self.assertEqual(failure["status"], "failed")
         self.assertEqual(len(failure["attempts"]), 2)
-        self.assertFalse((out / "summary.json").exists())
+        self.assertEqual(self.stages(adapter), ["discussion", "discussion"])
+        self.assertFalse((out / "discussion.json").exists())
         self.assertFalse((out / "digest.md").exists())
 
     def test_wrong_speaker_evidence_is_rejected_through_cli(self) -> None:
-        candidate = deepcopy(self.summary)
-        candidate["participant_views"][0]["evidence"] = candidate["participant_views"][1]["evidence"]
-        result, out, _ = self.run_adapter("attribution", attempts=1, summary=candidate)
+        result, out, adapter = self.run_adapter("attribution", attempts=1)
         self.assertEqual(result.returncode, 2)
         failure = json.loads((out / "failure.json").read_text())
-        self.assertTrue(any("not 'Alice'" in error for error in failure["attempts"][0]["errors"]))
+        self.assertTrue(any("speaker" in error or "Alex" in error for error in failure["attempts"][0]["errors"]))
+        self.assertEqual(self.stages(adapter), ["discussion"])
         self.assertFalse((out / "digest.md").exists())
 
     def test_malformed_bundle_is_rejected_cleanly_by_check_and_render(self) -> None:
-        summary = self.json_file("summary.json", self.summary)
         for index, broken_segments in enumerate((None, 3, [{"id": "S0001"}])):
             with self.subTest(segments=broken_segments):
                 broken = deepcopy(self.bundle)
                 broken["segments"] = broken_segments
-                bundle_path = self.json_file(f"broken-bundle-{index}.json", broken)
-                checked = self.cli("check", "--bundle", bundle_path, "--summary", summary)
+                flags = self.artifact_flags(bundle=broken)
+                checked = self.cli("check", *flags)
                 self.assertEqual(checked.returncode, 2)
                 self.assertIn("bundle.segments", checked.stderr)
                 self.assertNotIn("Traceback", checked.stderr)
                 destination = self.folder / f"broken-digest-{index}.md"
-                rendered = self.cli("render", "--bundle", bundle_path, "--summary", summary,
-                                    "--out", destination)
+                rendered = self.cli("render", *flags, "--out", destination)
                 self.assertEqual(rendered.returncode, 2)
                 self.assertNotIn("Traceback", rendered.stderr)
                 self.assertFalse(destination.exists())
+
+    def test_manual_prompts_refuse_early_brief_or_agenda(self) -> None:
+        flags = self.artifact_flags()
+        bundle_path = flags[1]
+        discussion_path = flags[3]
+        coverage_path = flags[5]
+        brief_path = flags[7]
+        cases = [
+            ("agenda", []),
+            ("agenda", ["--discussion", discussion_path]),
+            ("agenda", ["--discussion", discussion_path, "--coverage", coverage_path]),
+            ("brief", ["--discussion", discussion_path]),
+        ]
+        for index, (stage, prior) in enumerate(cases):
+            with self.subTest(stage=stage, prior=prior):
+                out = self.folder / f"early-prompt-{index}.txt"
+                result = self.cli("prompt", "--stage", stage, "--bundle", bundle_path, *prior, "--out", out)
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse(out.exists())
+        agenda_prompt = self.folder / "agenda.prompt.txt"
+        result = self.cli("prompt", "--stage", "agenda", "--bundle", bundle_path,
+                          "--discussion", discussion_path, "--coverage", coverage_path,
+                          "--brief", brief_path, "--out", agenda_prompt)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stage, payload = FIXTURE["parse_prompt"](agenda_prompt.read_text())
+        self.assertEqual(stage, "agenda")
+        self.assertNotIn("segments", payload["bundle"])
+
+    def test_manual_prompt_rejects_revision_and_incomplete_brief(self) -> None:
+        flags = self.artifact_flags()
+        revised = deepcopy(self.artifacts["coverage"])
+        revised["status"] = "revise"
+        revised["issues"] = [{"kind": "missing_response", "topic_id": "T2",
+                              "segment_ids": ["S0006"], "detail": "Check Alex's reply."}]
+        coverage_path = self.json_file("coverage-revise.json", revised)
+        for stage in ("brief", "agenda"):
+            out = self.folder / (stage + "-blocked.txt")
+            result = self.cli("prompt", "--stage", stage, "--bundle", flags[1],
+                              "--discussion", flags[3], "--coverage", coverage_path,
+                              "--brief", flags[7], "--out", out)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("revision", result.stderr)
+            self.assertFalse(out.exists())
+        broken = deepcopy(self.artifacts["brief"])
+        broken["topics"].pop()
+        brief_path = self.json_file("brief-incomplete.json", broken)
+        out = self.folder / "agenda-incomplete.txt"
+        result = self.cli("prompt", "--stage", "agenda", "--bundle", flags[1],
+                          "--discussion", flags[3], "--coverage", flags[5],
+                          "--brief", brief_path, "--out", out)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("preserve every topic", result.stderr)
+        self.assertFalse(out.exists())
+
+    def test_manual_discussion_prompt_rejects_malformed_bundle(self) -> None:
+        for index, broken in enumerate(({}, {**self.bundle, "segments": None},
+                                         {**self.bundle, "segments": [{"id": "S0001"}]})):
+            with self.subTest(bundle=broken):
+                bundle_path = self.json_file(f"malformed-prompt-bundle-{index}.json", broken)
+                out = self.folder / f"malformed-discussion-{index}.prompt.txt"
+                result = self.cli("prompt", "--stage", "discussion", "--bundle", bundle_path,
+                                  "--out", out)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("bundle", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertFalse(out.exists())
+
+    def test_topic_count_is_unlimited_until_final_agenda_selection(self) -> None:
+        source = self.folder / "2026-01-15-seven-topics.txt"
+        source.write_text("Fictional seven-topic meeting\nDate: 2026-01-15\n" +
+                          "\n".join(f"Alex: Independent topic {n}." for n in range(1, 8)) + "\n")
+        bundle = make_bundle(source)
+        discussion = deepcopy(self.artifacts["discussion"])
+        discussion["meeting"] = {key: bundle["meeting"][key] for key in ("title", "date", "source_sha256")}
+        discussion["rounds"] = [{"id": "R1", "presenter": "Alex", "topic_ids": [f"T{n}" for n in range(1, 8)]}]
+        discussion["topics"] = []
+        for n, segment in enumerate(bundle["segments"][2:], 1):
+            discussion["topics"].append({
+                "id": f"T{n}", "round_id": "R1", "presenter": "Alex", "title": f"Independent topic {n}",
+                "segment_ids": [segment["id"]],
+                "presentation": {"summary": segment["text"], "evidence": [{"segment_id": segment["id"], "quote": segment["text"]}]},
+                "discussion": [], "outcome": {"status": "no_conclusion", "summary": "No conclusion recorded.", "participants": [], "evidence": []},
+                "unresolved": [], "recorded_next_steps": []})
+        values = {"discussion": discussion}
+        values["coverage"] = FIXTURE["stage_output"]("coverage_review", bundle, values)
+        values["brief"] = FIXTURE["stage_output"]("brief", bundle, values)
+        values["agenda"] = {"schema_version": 2, "meeting": discussion["meeting"],
+                            "discussion_sha256": artifact_hash(discussion), "brief_sha256": artifact_hash(values["brief"]),
+                            "items": [{"id": "A1", "kind": "synthesizer_suggestion", "title": "Explore the first topic.",
+                                       "reason": "Summarizer suggestion based on Alex's first share.", "based_on": ["T1"], "recorded_proposal_id": None}],
+                            "deferred_recorded_proposals": []}
+        result = self.cli("check", *self.artifact_flags(values, bundle))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        context = {**values, **{name + "_sha256": artifact_hash(value) for name, value in values.items()}}
+        for stage in ("discussion", "coverage_review", "brief"):
+            prompt = build_prompt(stage, bundle, context)
+            instructions = prompt.split("UNTRUSTED INPUT (JSON DATA):", 1)[0]
+            self.assertNotIn("1–3", instructions)
+            self.assertNotIn("1-3", instructions)
+            schema = schema_for(stage)
+            self.assertNotIn('"maxItems": 3', json.dumps(schema))
+        self.assertEqual(schema_for("agenda")["properties"]["items"]["maxItems"], 3)
+        values["agenda"]["items"] *= 4
+        result = self.cli("check", *self.artifact_flags(values, bundle))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("1–3", result.stderr)
 
     def test_timeout_records_failure_without_final_digest(self) -> None:
         result, out, _ = self.run_adapter("timeout", extra=("--timeout", "1"))
         self.assertEqual(result.returncode, 2)
         self.assertIn("timed out", result.stderr)
-        self.assertEqual(json.loads((out / "failure.json").read_text())["reason"], "model_timeout")
+        self.assertIn("timed out", json.loads((out / "failure.json").read_text())["reason"])
         self.assertFalse((out / "digest.md").exists())
 
     def test_nonzero_adapter_exit_preserves_private_diagnostics(self) -> None:
         result, out, _ = self.run_adapter("exit")
         self.assertEqual(result.returncode, 2)
         self.assertNotIn("fictional diagnostic", result.stderr)
-        self.assertIn("fictional diagnostic", (out / "attempt-1.stderr.txt").read_text())
-        self.assertEqual(json.loads((out / "failure.json").read_text())["returncode"], 7)
+        self.assertIn("fictional diagnostic", (out / "01-discussion.stderr.txt").read_text())
+        self.assertEqual(json.loads((out / "failure.json").read_text())["status"], "failed")
         self.assertFalse((out / "digest.md").exists())
 
     def test_prompt_limit_stops_before_model_adapter_starts(self) -> None:
@@ -326,6 +474,19 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertFalse(adapter.with_suffix(".calls.json").exists())
         self.assertFalse((out / "digest.md").exists())
 
+    def test_source_size_limit_rejects_before_any_output_or_model_call(self) -> None:
+        oversized = self.folder / "2026-01-15-oversized.txt"
+        with oversized.open("wb") as stream:
+            stream.truncate(20_000_001)
+        out = self.folder / "oversized-run"
+        adapter = self.adapter("oversized")
+        result = self.cli("run", "--source", oversized, "--out", out,
+                          "--command-json", json.dumps([sys.executable, str(adapter)]))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("20 MB", result.stderr)
+        self.assertFalse(out.exists())
+        self.assertFalse(adapter.with_suffix(".calls.json").exists())
+
     def test_prepare_and_render_do_not_overwrite_previous_outputs(self) -> None:
         out = self.folder / "prepared"
         first = self.cli("prepare", "--source", self.source, "--out", out)
@@ -334,12 +495,24 @@ class CommandWorkflowTests(unittest.TestCase):
         second = self.cli("prepare", "--source", self.source, "--out", out)
         self.assertEqual(second.returncode, 2)
         self.assertEqual((out / "bundle.json").read_bytes(), original)
-        summary = self.json_file("summary.json", self.summary)
         rendered = self.folder / "digest.md"
         rendered.write_text("Existing fictional notes", encoding="utf-8")
-        result = self.cli("render", "--bundle", out / "bundle.json", "--summary", summary, "--out", rendered)
+        result = self.cli("render", *self.artifact_flags(), "--out", rendered)
         self.assertEqual(result.returncode, 2)
         self.assertEqual(rendered.read_text(), "Existing fictional notes")
+
+    def test_outputs_cannot_overwrite_original_source(self) -> None:
+        original = self.source.read_bytes()
+        flags = self.artifact_flags()
+        result = self.cli("render", *flags, "--out", self.source)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.source.read_bytes(), original)
+        result = self.cli("prompt", "--stage", "discussion", "--bundle", flags[1], "--out", self.source)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.source.read_bytes(), original)
+        result = self.cli("prepare", "--source", self.source, "--out", self.source)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.source.read_bytes(), original)
 
     def test_private_file_writer_refuses_existing_symlink(self) -> None:
         target = self.folder / "existing.txt"

@@ -12,6 +12,12 @@ Every factual summary item needs source evidence; every attributed view needs
 evidence from that person. Silence is not agreement. Suggestions are not adopted
 plans. Exact quote checking is not semantic verification; retain that distinction.
 
+Restore all presenter-led topics and comment-to-response relationships before
+shortening wording. An independent full-source coverage review must pass before
+the complete brief is written. Do not impose a topic count or choose what to omit
+based on the future agenda. Only after the brief is complete, select one to three
+next-discussion items, prioritizing recorded proposals and identifying extensions.
+
 Run `python3 -m unittest discover -s tests -v` and `python3 tools/audit_public.py`
 before publishing. Review additions to `public-files.json`; never broaden it to
 include generated artifacts or source folders. Inspect reachable history as well
