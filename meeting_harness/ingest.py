@@ -99,8 +99,10 @@ def latest_source(folder: Path) -> Path:
                         and p.suffix.lower() in SUPPORTED
                         and p.name.lower() not in GENERATED_REPORT_NAMES
                         and not p.name.lower().endswith("_with_references.md")
+                        and not p.name.lower().endswith(" [with references].md")
                         and not (p.suffix.lower() == ".md" and
-                                 p.with_name(p.stem + "_with_references.md").is_file())
+                                 any(p.with_name(p.stem + suffix).is_file()
+                                     for suffix in ("_with_references.md", " [with references].md")))
                         and not any(part.startswith(".") for part in p.relative_to(folder).parts)
                         and not p.name.startswith("~$"))
     if not candidates:

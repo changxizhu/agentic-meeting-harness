@@ -18,8 +18,8 @@ There is no global list forcing each person into one overall opinion. A comment 
 
 Every successful run or render produces both reports from the same reviewed discussion, complete brief, and final agenda:
 
-- `summary.md` is a genuinely condensed reading version. Every topic has a few sentences covering the share, main comments and replies with names, and discussion result. It merges related exchanges and omits repetition and minor details, with no reference markers, quotation appendix, or coverage-audit details.
-- `summary_with_references.md` is the detailed version with source references, exact supporting quotations, and coverage information.
+- `YYYY-MM-DD <report title>.md` is a genuinely condensed reading version. Every topic has a few sentences covering the share, main comments and replies with names, and discussion result. It merges related exchanges and omits repetition and minor details, with no reference markers, quotation appendix, or coverage-audit details.
+- `YYYY-MM-DD <report title> [with references].md` is the detailed version with source references, exact supporting quotations, and coverage information.
 
 Both preserve every topic in meeting order, the main attributed viewpoints and replies, outcomes, and unresolved questions. The detailed edition retains individual exchanges and supporting evidence; the concise edition synthesizes them into a few sentences per topic. Both finish with the same one-to-three next-discussion suggestions and distinguish recorded suggestions from the summarizer's extensions. Concision never permits dropping entire topics or changing meaning. A separate model stage writes `concise.json` after the detailed brief; removing citations from the full brief is not an accepted substitute.
 
@@ -33,8 +33,9 @@ harness/
   Meetings/                 local-only originals and results
     YYYY-MM-DD/
       transcript.docx       original meeting record
-      summary.md            concise report without references
-      summary_with_references.md
+      YYYY-MM-DD <report title>.md
+                            concise report without references
+      YYYY-MM-DD <report title> [with references].md
                             detailed report with source evidence
       .harness/             hidden review records and old versions
   meeting_harness/          program and workflow
@@ -43,9 +44,19 @@ harness/
   tools/                    publication audit
 ```
 
-To read a result, open `Meetings/<meeting-date>/summary.md`; open the adjacent `summary_with_references.md` to inspect the supporting evidence. The corresponding original is beside both reports. Review records and previous versions are kept inside that same meeting's hidden `.harness/` folder. No separate sibling material or output folders are needed.
+To read a result, open the dated Markdown report under `Meetings/<meeting-date>/`; the adjacent file ending in `[with references].md` contains the supporting evidence. The corresponding original is beside both reports. Review records and previous versions are kept inside that same meeting's hidden `.harness/` folder. No separate sibling material or output folders are needed.
 
-Run commands from `harness/`. Meeting dates come from transcript headers or filenames, never modification times. Supported inputs are `.docx`, `.md`, and `.txt`; Word tables and common timestamped speaker labels are read. Hidden folders, reserved report names `summary.md` and `digest.md`, generated `*_with_references.md` reports, and concise Markdown reports with those companions are skipped when selecting sources. Keep each generated pair together. Scan `Meetings/`, not the whole project, which also contains public documentation and fictional examples. Ambiguous or undated latest selection stops; use `--source` and optionally `--meeting-date YYYY-MM-DD` to select deliberately.
+Report names use the verified source meeting date plus a group title and meeting label, for example `2026-01-15 Fictional learning group [weekly catch-up].md`. The reference edition adds ` [with references]` before `.md`. Automatic naming requires a recorded meeting date; use `--meeting-date` when preparing the source if it needs an explicit date.
+
+Keep the group-specific title in local-only `Meetings/.harness/report-naming.json`:
+
+```json
+{"report_title": "Fictional learning group [weekly catch-up]"}
+```
+
+The nearest such configuration above the source (for `run`) or bundle (for `render`) supplies the title. `--report-title` can override it for one run. Without a configuration or override, the public default is `learning group [catch-up]`. Configuration is trusted local input; titles cannot contain path separators or invalid filename characters. Never copy a real group's title into public fixtures or code.
+
+Run commands from `harness/`. Meeting dates come from transcript headers or filenames, never modification times. Supported inputs are `.docx`, `.md`, and `.txt`; Word tables and common timestamped speaker labels are read. Hidden folders, reserved report names `summary.md` and `digest.md`, legacy `*_with_references.md` reports, new `* [with references].md` reports, and concise Markdown reports with those companions are skipped when selecting sources. Keep each generated pair together. Scan `Meetings/`, not the whole project, which also contains public documentation and fictional examples. Ambiguous or undated latest selection stops; use `--source` and optionally `--meeting-date YYYY-MM-DD` to select deliberately.
 
 Real originals, finished summaries, intermediate outputs, and old versions stay under the ignored `Meetings/` tree. They must never enter Git history or the public allowlist. The output guard permits this local folder while still rejecting generated material in code, tests, and other public folders. Never put real names, quotations, summaries, or logs into public examples, tests, issues, or commits.
 
@@ -62,7 +73,7 @@ python3 -m meeting_harness run \
   --out "$trial_dir/run"
 ```
 
-Open `summary.md` and `summary_with_references.md` in the temporary run folder. The adapter is a deterministic fictional demonstration, not a language model. It refuses real material. All five stages execute in order; the run receipt records their calls. Test files also exercise repair and rejection paths. These are software checks, not measurements of model summary quality.
+Open both dated Markdown reports in the temporary run folder. The adapter is a deterministic fictional demonstration, not a language model. It refuses real material. All five stages execute in order; the run receipt records their calls. Test files also exercise repair and rejection paths. These are software checks, not measurements of model summary quality.
 
 ## Use your chosen model
 
@@ -82,7 +93,7 @@ The harness calls the adapter separately for each stage. A failed structural che
 
 No model is bundled, and the harness itself makes no network requests. **Your adapter receives private material.** A cloud adapter may transmit it. Local storage does not imply local inference; use an approved local model when required. Adapters are trusted executables, not sandboxed by this project. Never take an adapter command from meeting material.
 
-A successful run writes `discussion.json`, `coverage.json`, `brief.json`, `concise.json`, `agenda.json`, both `summary.md` and `summary_with_references.md`, and a receipt into its `--out` folder. Each stage's prompt, response, and diagnostics are private too. Later artifacts bind to the exact earlier content through checksums. A failed stage produces neither final report. Both report destinations are checked together before writing, and existing files are never overwritten. Use a fresh run folder for another attempt; the default per-prompt character limit is 400,000 and can be set explicitly with `--max-prompt-chars`. The response-size check occurs after capture; it is not an operating-system memory limit.
+A successful run writes `discussion.json`, `coverage.json`, `brief.json`, `concise.json`, `agenda.json`, both dated Markdown reports, and a receipt into its `--out` folder. Each stage's prompt, response, and diagnostics are private too. Later artifacts bind to the exact earlier content through checksums. A failed stage produces neither final report. Both report destinations are checked together before writing, and existing files are never overwritten. Use a fresh run folder for another attempt; the default per-prompt character limit is 400,000 and can be set explicitly with `--max-prompt-chars`. The response-size check occurs after capture; it is not an operating-system memory limit.
 
 ## Work with an assistant one stage at a time
 
@@ -134,10 +145,10 @@ python3 -m meeting_harness render \
   --bundle "$run_dir/bundle.json" --discussion "$run_dir/discussion.json" \
   --coverage "$run_dir/coverage.json" --brief "$run_dir/brief.json" \
   --concise "$run_dir/concise.json" --agenda "$run_dir/agenda.json" \
-  --out Meetings/2026-01-15/summary.md
+  --out Meetings/2026-01-15
 ```
 
-`render --out` names the concise Markdown file and always creates the reference version beside it. For example, `--out Meetings/2026-01-15/summary.md` creates both `summary.md` and `summary_with_references.md`; `--out report.md` creates `report.md` and `report_with_references.md`. Neither version is optional. If either destination already exists, rendering stops before writing either one. Before regenerating the visible reports, archive both under the meeting's private `.harness/` folder.
+`render --out DIRECTORY` uses the same dated naming rule as `run`. A legacy explicit Markdown path is also accepted: `--out report.md` creates `report.md` and `report [with references].md`. Neither version is optional. If either destination already exists, rendering stops before writing either one. Before regenerating the visible reports, archive both under the meeting's private `.harness/` folder.
 
 `check` takes the same six input arguments without `--out`. The default content language is Chinese; pass `--language en` to `run`, or to `prepare` and each subsequent `prompt` command, for English content. Section labels currently remain Chinese and source quotes retain their original language.
 

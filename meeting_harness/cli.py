@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import json
 import os
 from pathlib import Path
@@ -14,10 +15,51 @@ from .review import (artifact_hash, render_concise_markdown, render_markdown, va
                      validate_bundle, validate_concise, validate_coverage, validate_discussion)
 
 STAGES = ('discussion', 'coverage_review', 'brief', 'concise', 'agenda')
+DEFAULT_REPORT_TITLE = 'learning group [catch-up]'
+REFERENCE_SUFFIX = ' [with references]'
 
 
 def dump(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
+
+
+def validate_report_title(value: object) -> str:
+    """Accept one literal filename label from trusted settings or an argument."""
+    if (not isinstance(value, str) or not value or value != value.strip()
+            or value in ('.', '..') or value.endswith('.')
+            or any(not char.isprintable() or char in '/\\<>:"|?*' for char in value)
+            or value.lower().endswith(('_with_references', REFERENCE_SUFFIX))):
+        raise HarnessError('Report title must be a nonempty filename-safe label without path separators, control characters, or a reference suffix.')
+    if len(('2000-01-01 ' + value + REFERENCE_SUFFIX + '.md').encode('utf-8')) > 255:
+        raise HarnessError('Report title is too long for the complete dated filename; choose a shorter title. It will not be truncated.')
+    return value
+
+
+def resolve_report_title(explicit: str | None, anchor: Path) -> str:
+    """Look only in trusted local settings, never in transcript text."""
+    if explicit is not None:
+        return validate_report_title(explicit)
+    location = anchor.resolve().parent
+    for parent in (location, *location.parents):
+        settings = parent / '.harness' / 'report-naming.json'
+        if settings.is_symlink() or (settings.parent.is_symlink() and settings.exists()):
+            raise HarnessError('Report-naming settings must be a regular local file, not a symlink.')
+        if settings.exists():
+            value = load_json(settings)
+            if set(value) != {'report_title'}:
+                raise HarnessError('Report-naming settings must contain exactly one report_title field.')
+            return validate_report_title(value['report_title'])
+    return DEFAULT_REPORT_TITLE
+
+
+def dated_report_path(directory: Path, bundle: dict, title: str) -> Path:
+    recorded = bundle.get('meeting', {}).get('date')
+    try:
+        if not isinstance(recorded, str) or date.fromisoformat(recorded).isoformat() != recorded:
+            raise ValueError()
+    except ValueError as exc:
+        raise HarnessError('A known meeting date is required for reports. Prepare or run the source with --meeting-date YYYY-MM-DD; the current date is never substituted.') from exc
+    return directory / f'{recorded} {validate_report_title(title)}.md'
 
 
 def private_destination(path: Path) -> Path:
@@ -48,8 +90,8 @@ def write_private(path: Path, content: str) -> None:
 
 def write_report_pair(path: Path, concise: str, referenced: str) -> tuple[Path, Path]:
     """Always produce both views, preserving either existing output on failure."""
-    requested = (path, path.with_name(path.stem + '_with_references.md'))
-    if path.suffix.lower() != '.md' or path.stem.lower().endswith('_with_references'):
+    requested = (path, path.with_name(path.stem + REFERENCE_SUFFIX + '.md'))
+    if path.suffix.lower() != '.md' or path.stem.lower().endswith(('_with_references', REFERENCE_SUFFIX)):
         raise HarnessError('Use a concise Markdown filename such as summary.md; its reference companion is created automatically.')
     # Check literal paths too: resolving a dangling symlink must not authorize
     # replacing it or writing to its missing target.
@@ -98,12 +140,14 @@ def stage_context(discussion=None, coverage=None, brief=None, concise=None) -> d
     return context
 
 
-def prepare(args) -> tuple[dict, Path]:
+def prepare(args, *, source: Path | None = None, report_title: str | None = None) -> tuple[dict, Path]:
     out = private_destination(args.out)
     if out.exists() and (not out.is_dir() or any(out.iterdir())):
         raise HarnessError('Output directory must be new or empty to preserve previous runs.')
-    source = args.source or latest_source(args.meetings_dir)
+    source = source or args.source or latest_source(args.meetings_dir)
     bundle = make_bundle(source, args.meeting_date)
+    if report_title is not None:
+        dated_report_path(out, bundle, report_title)
     write_private(out / 'bundle.json', dump(bundle))
     write_private(out / 'discussion.prompt.txt', build_prompt('discussion', bundle, language=args.language))
     write_private(out / 'discussion.schema.json', dump(schema_for('discussion')))
@@ -204,7 +248,9 @@ def run_model(args) -> None:
             raise ValueError()
     except ValueError as exc:
         raise HarnessError('Model command must be a nonempty JSON array of strings.') from exc
-    bundle, out = prepare(args)
+    source = args.source or latest_source(args.meetings_dir)
+    report_title = resolve_report_title(args.report_title, source)
+    bundle, out = prepare(args, source=source, report_title=report_title)
     runner = ModelRunner(args, bundle, out)
     try:
         repair = {}
@@ -229,7 +275,7 @@ def run_model(args) -> None:
         agenda = runner.generate('agenda', stage_context(discussion, coverage, brief, concise),
                                  lambda x: validate_agenda(x, discussion, brief, bundle))
         write_private(out / 'agenda.json', dump(agenda))
-        reports = write_report_pair(out / 'summary.md',
+        reports = write_report_pair(dated_report_path(out, bundle, report_title),
                                     render_concise_markdown(discussion, coverage, brief, agenda, bundle, concise),
                                     render_markdown(discussion, coverage, brief, agenda, bundle))
         write_private(out / 'receipt.json', dump({'schema_version': 2, 'status': 'ordered_workflow_completed',
@@ -241,7 +287,7 @@ def run_model(args) -> None:
     except HarnessError as exc:
         write_private(out / 'failure.json', dump({'status': 'failed', 'reason': str(exc), 'attempts': runner.records}))
         raise
-    print('Both reports created: summary.md (concise) and summary_with_references.md (with source references).')
+    print(f'Both reports created: {reports[0].name} (concise) and {reports[1].name} (with source references).')
 
 
 def parser():
@@ -256,6 +302,7 @@ def parser():
         p.add_argument('--out', type=Path, required=True)
         p.add_argument('--language', choices=('en', 'zh'), default='zh')
         if action == 'run':
+            p.add_argument('--report-title', help='Trusted filename label; defaults to nearest local report-naming settings, then a generic label.')
             p.add_argument('--command-json', required=True)
             p.add_argument('--attempts', type=int, choices=range(1, 4), default=2)
             p.add_argument('--timeout', type=int, default=300)
@@ -270,7 +317,9 @@ def parser():
             p.add_argument('--language', choices=('en', 'zh'), default='zh')
         if action in ('prompt', 'render'):
             p.add_argument('--out', type=Path, required=True,
-                           help='For render: concise Markdown filename; the reference companion is always created beside it.')
+                           help='For render: output folder for dated reports, or an explicit concise .md filename; its reference companion is always created beside it.')
+        if action == 'render':
+            p.add_argument('--report-title', help='Trusted filename label for dated output folders; never taken from transcript text.')
     return root
 
 
@@ -292,7 +341,12 @@ def main(argv=None) -> int:
                 write_private(private_destination(args.out), content)
                 print('Prompt created after checking the required prior stages.')
             elif args.action == 'render':
-                reports = write_report_pair(args.out,
+                if args.out.suffix.lower() == '.md' and not args.out.is_dir():
+                    report_path = args.out
+                else:
+                    title = resolve_report_title(args.report_title, args.bundle)
+                    report_path = dated_report_path(args.out, bundle, title)
+                reports = write_report_pair(report_path,
                                             render_concise_markdown(discussion, coverage, brief, agenda, bundle, concise),
                                             render_markdown(discussion, coverage, brief, agenda, bundle))
                 print(f'Both reports rendered: {reports[0].name} (concise) and {reports[1].name} (with source references).')

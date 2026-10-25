@@ -23,9 +23,13 @@ summary of every topic. Only after both summaries are complete, select one to
 three next-discussion items, prioritizing recorded proposals and identifying
 extensions.
 
-Every completed meeting must produce both reports together: summary.md is the
-concise report without reference markers or a source appendix;
-summary_with_references.md is the detailed report with evidence and quotations.
+Every completed meeting must produce both reports together. Name the concise
+report `YYYY-MM-DD <report title>.md` and the detailed edition
+`YYYY-MM-DD <report title> [with references].md`. Use the verified meeting date,
+never today's date. Keep group-specific report titles in the ignored local
+Meetings/.harness/report-naming.json configuration, not public code or examples.
+The concise report has no reference markers or source appendix; the detailed
+edition includes evidence and quotations.
 Both use the same reviewed discussion and final agenda. The reference edition
 keeps the detailed brief and evidence. The concise edition must rewrite the
 content, not merely remove references or tighten the layout: retain every topic
@@ -42,11 +46,13 @@ never fall back to rendering the full brief without citations. Check its meaning
 against the reviewed discussion before writing the final agenda. One to three
 still limits only the final next-discussion agenda, not meeting topic coverage.
 
-The run command writes both reports into its output folder. The render command's
-output path names the concise report and adds a sibling with _with_references
-before .md. Check both destinations before writing either report. Never overwrite
-an existing file; privately archive both reports before regenerating at the same
-paths. Exclude generated reports from automatic meeting-source selection.
+The run command writes both dated reports into its output folder. Prefer a
+directory for render --out to use the same naming rule. A legacy explicit
+Markdown output path still names the concise report; its companion adds
+` [with references]` before `.md`. Check both destinations before writing either
+report. Never overwrite an existing file; privately archive both reports before
+regenerating at the same paths. Exclude generated reports from automatic
+meeting-source selection.
 
 Run `python3 -m unittest discover -s tests -v` and `python3 tools/audit_public.py`
 before publishing. Review additions to `public-files.json`; never broaden it to

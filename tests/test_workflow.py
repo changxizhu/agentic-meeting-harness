@@ -116,6 +116,18 @@ class IngestionWorkflowTests(unittest.TestCase):
         self.source("2026-10-21/digest.md", "Summary\nMeeting date: 2026-12-31\n")
         self.assertEqual(latest_source(self.folder), newest)
 
+    def test_dated_report_pairs_and_reference_marker_do_not_compete_with_source(self) -> None:
+        newest = self.source('2026-10-21/transcript.txt', 'Fictional review\nDate: 2026-10-21\nAlice: Hello.\n')
+        for title in ('learning group [catch-up]', 'Fictional research circle [monthly review]'):
+            self.source(f'2026-10-21/2026-10-21 {title}.md', 'Condensed report without a source date.\n')
+            self.source(f'2026-10-21/2026-10-21 {title} [with references].md', 'Evidence without a source date.\n')
+        self.source('2026-10-21/archived companion [with references].md', 'References alone.\n')
+        self.assertEqual(latest_source(self.folder), newest)
+
+    def test_dated_bracketed_original_is_not_mistaken_for_a_generated_report(self) -> None:
+        original = self.source('2026-10-21 Fictional study [monthly review].md', 'Original discussion\nAlice: Hello.\n')
+        self.assertEqual(latest_source(self.folder), original)
+
     def test_docx_extraction_includes_tables_and_preserves_body_order(self) -> None:
         source = self.folder / "2026-10-21-fictional.docx"
         document = '''<?xml version="1.0" encoding="UTF-8"?>
@@ -177,6 +189,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.source = self.folder / EXAMPLE.name
         self.source.write_bytes(EXAMPLE.read_bytes())
         self.bundle = make_bundle(self.source)
+        self.report_name = '2026-01-15 learning group [catch-up].md'
+        self.reference_name = '2026-01-15 learning group [catch-up] [with references].md'
         self.artifacts = fictional_artifacts(self.bundle)
 
     def cli(self, *args: object) -> subprocess.CompletedProcess[str]:
@@ -253,13 +267,13 @@ class CommandWorkflowTests(unittest.TestCase):
         rendered = self.folder / "digest.md"
         result = self.cli("render", *flags, "--out", rendered)
         self.assertEqual(result.returncode, 0, result.stderr)
-        text = rendered.with_name("digest_with_references.md").read_text()
+        text = rendered.with_name("digest [with references].md").read_text()
         concise = rendered.read_text()
         self.assertNotIn("原文依据", concise)
         self.assertNotIn("[E1]", concise)
         self.assertNotIn("S0003", concise)
         self.assertLess(len(concise), len(text))
-        for report in (rendered, rendered.with_name("digest_with_references.md")):
+        for report in (rendered, rendered.with_name("digest [with references].md")):
             self.assertEqual(report.stat().st_mode & 0o777, 0o600)
         for required in ("完整会议讨论", "评论与回应", "讨论结果", "分歧与开放问题", "下次讨论议题", "原文依据"):
             self.assertIn(required, text)
@@ -278,15 +292,147 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertEqual(receipt["stage_order"], self.stages(adapter))
         self.assertEqual(receipt["topic_count"], 2)
         self.assertIn("not proof", receipt["review_limits"])
-        self.assertTrue((out / "summary.md").exists())
-        self.assertTrue((out / "summary_with_references.md").exists())
+        self.assertTrue((out / self.report_name).exists())
+        self.assertTrue((out / self.reference_name).exists())
         self.assertFalse((out / "digest.md").exists())
-        self.assertEqual(receipt["reports"], {"concise": "summary.md", "with_references": "summary_with_references.md"})
+        self.assertEqual(receipt["reports"], {"concise": self.report_name, "with_references": self.reference_name})
         self.assertEqual(receipt["concise_sha256"], artifact_hash(self.artifacts["concise"]))
         self.assertFalse((out / "failure.json").exists())
         self.assertEqual([call["segments_present"] for call in self.calls(adapter)], [True, True, True, False, False])
         self.assertIn('concise', self.calls(adapter)[-1]['context_keys'])
         self.assertIn('concise_sha256', self.calls(adapter)[-1]['context_keys'])
+
+    def test_report_names_use_recorded_meeting_date_instead_of_current_date(self) -> None:
+        result, out, _ = self.run_adapter('dated-name')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((out / self.report_name).is_file())
+        self.assertTrue((out / self.reference_name).is_file())
+        self.assertNotIn(self.bundle['meeting']['title'], self.report_name)
+        self.assertNotIn('summary.md', {p.name for p in out.iterdir()})
+
+    def test_run_reads_nearest_private_naming_settings_and_explicit_override_wins(self) -> None:
+        setting = self.folder / '.harness' / 'report-naming.json'
+        setting.parent.mkdir()
+        setting.write_text(json.dumps({'report_title': 'Fictional research circle [monthly review]'}))
+        nested = self.folder / 'collection' / 'session'
+        nested.mkdir(parents=True)
+        source = nested / self.source.name
+        source.write_bytes(self.source.read_bytes())
+        closest = nested.parent / '.harness' / 'report-naming.json'
+        closest.parent.mkdir()
+        closest.write_text(json.dumps({'report_title': 'Fictional local circle [weekly review]'}))
+        self.source = source
+        result, out, _ = self.run_adapter('configured')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        basename = '2026-01-15 Fictional local circle [weekly review]'
+        self.assertTrue((out / (basename + '.md')).is_file())
+        self.assertTrue((out / (basename + ' [with references].md')).is_file())
+        closest.write_text(json.dumps({'report_title': '../unsafe'}))
+        result, out, _ = self.run_adapter('override', extra=('--report-title', 'Fictional explicit title'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((out / '2026-01-15 Fictional explicit title.md').is_file())
+
+    def test_invalid_naming_settings_fail_before_output_or_model_calls(self) -> None:
+        setting = self.folder / '.harness' / 'report-naming.json'
+        setting.parent.mkdir()
+        for index, title in enumerate(('../escape', 'folder/name', 'folder\\name', 'line\nbreak', 'bad:title', '', '\u0085',
+                                      'trailing ', 'name [with references]', 'name_with_references', 'x' * 240)):
+            with self.subTest(title=title):
+                setting.write_text(json.dumps({'report_title': title}))
+                result, out, adapter = self.run_adapter(f'unsafe-title-{index}')
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('Report title', result.stderr)
+                self.assertFalse(out.exists())
+                self.assertFalse(adapter.with_suffix('.calls.json').exists())
+        setting.write_text(json.dumps({'report_title': 'Fictional circle', 'unexpected': True}))
+        result, out, _ = self.run_adapter('unexpected-setting')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('exactly one', result.stderr)
+        self.assertFalse(out.exists())
+
+    def test_unsafe_explicit_title_fails_before_output_or_model_calls(self) -> None:
+        result, out, adapter = self.run_adapter('unsafe-argument', extra=('--report-title', '../escape'))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('Report title', result.stderr)
+        self.assertFalse(out.exists())
+        self.assertFalse(adapter.with_suffix('.calls.json').exists())
+
+    def test_symlinked_naming_settings_are_not_followed(self) -> None:
+        setting = self.folder / '.harness' / 'report-naming.json'
+        setting.parent.mkdir()
+        external = self.json_file('external-naming.json', {'report_title': 'Fictional circle'})
+        setting.symlink_to(external)
+        result, out, _ = self.run_adapter('symlink-settings')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('not a symlink', result.stderr)
+        self.assertFalse(out.exists())
+
+    def test_render_directory_uses_bundle_date_and_private_settings(self) -> None:
+        flags = self.artifact_flags()
+        # A saved bundle can live several levels inside hidden working records;
+        # naming remains attached to the meeting folder rather than the run.
+        nested_bundle = self.folder / '.harness' / 'records' / 'bundle.json'
+        nested_bundle.parent.mkdir(parents=True)
+        nested_bundle.write_bytes(Path(flags[1]).read_bytes())
+        flags[1] = str(nested_bundle)
+        setting = self.folder / '.harness' / 'report-naming.json'
+        setting.write_text(json.dumps({'report_title': 'Fictional research circle [monthly review]'}))
+        out = self.folder / 'rendered-reports'
+        result = self.cli('render', *flags, '--out', out)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        basename = '2026-01-15 Fictional research circle [monthly review]'
+        self.assertEqual({p.name for p in out.iterdir()}, {basename + '.md', basename + ' [with references].md'})
+        override = self.folder / 'rendered-override'
+        result = self.cli('render', *flags, '--out', override, '--report-title', 'Fictional explicit title')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((override / '2026-01-15 Fictional explicit title.md').is_file())
+
+    def test_reference_style_explicit_output_names_are_rejected_without_creating_files(self) -> None:
+        flags = self.artifact_flags()
+        for name in ('summary_with_references.md', 'summary [with references].md', 'summary [WITH REFERENCES].md'):
+            with self.subTest(name=name):
+                out = self.folder / name
+                result = self.cli('render', *flags, '--out', out)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('concise Markdown filename', result.stderr)
+                self.assertFalse(out.exists())
+
+    def test_explicit_markdown_path_preserves_legacy_undated_render_without_naming_settings(self) -> None:
+        bundle = deepcopy(self.bundle)
+        bundle['meeting']['date'] = None
+        bundle['meeting']['date_basis'] = 'not_recorded'
+        artifacts = fictional_artifacts(bundle)
+        flags = self.artifact_flags(artifacts, bundle)
+        setting = self.folder / '.harness' / 'report-naming.json'
+        setting.parent.mkdir()
+        setting.write_text(json.dumps({'report_title': '../unsafe'}))
+        explicit = self.folder / 'legacy-explicit.md'
+        result = self.cli('render', *flags, '--out', explicit)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(explicit.is_file())
+        self.assertTrue(explicit.with_name('legacy-explicit [with references].md').is_file())
+        setting.unlink()
+        automatic = self.folder / 'undated-auto'
+        result = self.cli('render', *flags, '--out', automatic)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--meeting-date YYYY-MM-DD', result.stderr)
+        self.assertFalse(automatic.exists())
+
+    def test_unknown_meeting_date_fails_before_preparing_or_calling_model(self) -> None:
+        self.source = self.folder / 'undated.txt'
+        self.source.write_text('Fictional undated discussion\nAlex: Hello.\n')
+        result, out, adapter = self.run_adapter('unknown-date')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--meeting-date YYYY-MM-DD', result.stderr)
+        self.assertFalse(out.exists())
+        self.assertFalse(adapter.with_suffix('.calls.json').exists())
+
+    def test_explicit_meeting_date_controls_dated_output_name(self) -> None:
+        result, out, _ = self.run_adapter('date-override', extra=('--meeting-date', '2026-02-17'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((out / '2026-02-17 learning group [catch-up].md').is_file())
+        self.assertTrue((out / '2026-02-17 learning group [catch-up] [with references].md').is_file())
+        self.assertEqual(json.loads((out / 'bundle.json').read_text())['meeting']['date'], '2026-02-17')
 
     def test_concise_stage_rewrites_each_topic_and_groups_comments_into_short_prose(self) -> None:
         result, out, _ = self.run_adapter("success")
@@ -306,7 +452,7 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertIn('open', timing['outcome'])
         self.assertEqual(timing['comment_ids'], ['T2.C1', 'T2.C2'])
         self.assertEqual(timing['unresolved_ids'], ['T2.U1'])
-        text = (out / 'summary.md').read_text()
+        text = (out / self.report_name).read_text()
         for topic in concise['topics']:
             self.assertIn(topic['title'], text)
             self.assertIn(topic['presentation'], text)
@@ -327,8 +473,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertTrue(receipt['attempts'][3]['errors'])
         self.assertEqual(receipt['attempts'][4]['errors'], [])
         self.assertEqual(json.loads((out / 'concise.json').read_text()), self.artifacts['concise'])
-        self.assertTrue((out / 'summary.md').exists())
-        self.assertTrue((out / 'summary_with_references.md').exists())
+        self.assertTrue((out / self.report_name).exists())
+        self.assertTrue((out / self.reference_name).exists())
 
     def test_invalid_concise_stage_blocks_agenda_and_both_reports_without_fallback(self) -> None:
         result, out, adapter = self.run_adapter('concise-invalid')
@@ -337,8 +483,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertTrue((out / 'brief.json').exists())
         self.assertFalse((out / 'concise.json').exists())
         self.assertFalse((out / 'agenda.json').exists())
-        self.assertFalse((out / 'summary.md').exists())
-        self.assertFalse((out / 'summary_with_references.md').exists())
+        self.assertFalse((out / self.report_name).exists())
+        self.assertFalse((out / self.reference_name).exists())
         failure = json.loads((out / 'failure.json').read_text())
         self.assertIn('concise', failure['reason'])
         self.assertTrue(failure['attempts'][-1]['errors'])
@@ -372,8 +518,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertFalse((out / "brief.json").exists())
         self.assertFalse((out / "agenda.json").exists())
         self.assertFalse((out / "digest.md").exists())
-        self.assertFalse((out / "summary.md").exists())
-        self.assertFalse((out / "summary_with_references.md").exists())
+        self.assertFalse((out / self.report_name).exists())
+        self.assertFalse((out / self.reference_name).exists())
         self.assertTrue((out / "failure.json").exists())
 
     def test_brief_cannot_drop_a_topic_or_comment_and_is_repaired_before_agenda(self) -> None:
@@ -397,8 +543,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertEqual(self.stages(adapter), ["discussion", "discussion"])
         self.assertFalse((out / "discussion.json").exists())
         self.assertFalse((out / "digest.md").exists())
-        self.assertFalse((out / "summary.md").exists())
-        self.assertFalse((out / "summary_with_references.md").exists())
+        self.assertFalse((out / self.report_name).exists())
+        self.assertFalse((out / self.reference_name).exists())
 
     def test_wrong_speaker_evidence_is_rejected_through_cli(self) -> None:
         result, out, adapter = self.run_adapter("attribution", attempts=1)
@@ -407,8 +553,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertTrue(any("speaker" in error or "Alex" in error for error in failure["attempts"][0]["errors"]))
         self.assertEqual(self.stages(adapter), ["discussion"])
         self.assertFalse((out / "digest.md").exists())
-        self.assertFalse((out / "summary.md").exists())
-        self.assertFalse((out / "summary_with_references.md").exists())
+        self.assertFalse((out / self.report_name).exists())
+        self.assertFalse((out / self.reference_name).exists())
 
     def test_malformed_bundle_is_rejected_cleanly_by_check_and_render(self) -> None:
         for index, broken_segments in enumerate((None, 3, [{"id": "S0001"}])):
@@ -481,7 +627,7 @@ class CommandWorkflowTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertIn('--concise', result.stderr)
                 self.assertFalse(out.exists())
-                self.assertFalse(out.with_name(out.stem + '_with_references.md').exists())
+                self.assertFalse(out.with_name(out.stem + ' [with references].md').exists())
         broken = deepcopy(self.artifacts)
         broken['concise']['topics'].pop()
         broken_flags = self.artifact_flags(broken)
@@ -493,7 +639,7 @@ class CommandWorkflowTests(unittest.TestCase):
                 self.assertIn('preserve every topic', result.stderr)
                 self.assertNotIn('Traceback', result.stderr)
                 self.assertFalse(out.exists())
-                self.assertFalse(out.with_name(out.stem + '_with_references.md').exists())
+                self.assertFalse(out.with_name(out.stem + ' [with references].md').exists())
 
     def test_manual_prompt_rejects_revision_and_incomplete_brief(self) -> None:
         flags = self.artifact_flags()
@@ -581,8 +727,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertIn("timed out", result.stderr)
         self.assertIn("timed out", json.loads((out / "failure.json").read_text())["reason"])
         self.assertFalse((out / "digest.md").exists())
-        self.assertFalse((out / "summary.md").exists())
-        self.assertFalse((out / "summary_with_references.md").exists())
+        self.assertFalse((out / self.report_name).exists())
+        self.assertFalse((out / self.reference_name).exists())
 
     def test_nonzero_adapter_exit_preserves_private_diagnostics(self) -> None:
         result, out, _ = self.run_adapter("exit")
@@ -591,8 +737,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertIn("fictional diagnostic", (out / "01-discussion.stderr.txt").read_text())
         self.assertEqual(json.loads((out / "failure.json").read_text())["status"], "failed")
         self.assertFalse((out / "digest.md").exists())
-        self.assertFalse((out / "summary.md").exists())
-        self.assertFalse((out / "summary_with_references.md").exists())
+        self.assertFalse((out / self.report_name).exists())
+        self.assertFalse((out / self.reference_name).exists())
 
     def test_prompt_limit_stops_before_model_adapter_starts(self) -> None:
         result, out, adapter = self.run_adapter("limit", extra=("--max-prompt-chars", "10"))
@@ -600,8 +746,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertIn("No text was truncated or sent", result.stderr)
         self.assertFalse(adapter.with_suffix(".calls.json").exists())
         self.assertFalse((out / "digest.md").exists())
-        self.assertFalse((out / "summary.md").exists())
-        self.assertFalse((out / "summary_with_references.md").exists())
+        self.assertFalse((out / self.report_name).exists())
+        self.assertFalse((out / self.reference_name).exists())
 
     def test_source_size_limit_rejects_before_any_output_or_model_call(self) -> None:
         oversized = self.folder / "2026-01-15-oversized.txt"
@@ -654,7 +800,7 @@ class CommandWorkflowTests(unittest.TestCase):
 
     def test_render_existing_either_version_preserves_both_paths(self) -> None:
         flags = self.artifact_flags()
-        for version in ('summary.md', 'summary_with_references.md'):
+        for version in ('summary.md', 'summary [with references].md'):
             with self.subTest(existing=version):
                 folder = self.folder / version.removesuffix('.md')
                 folder.mkdir()
@@ -669,18 +815,18 @@ class CommandWorkflowTests(unittest.TestCase):
     def test_report_pair_rolls_back_first_if_second_write_fails(self) -> None:
         concise = self.folder / 'summary.md'
         def fail_second(path, content):
-            if path.name.endswith('_with_references.md'):
+            if path.name.endswith(' [with references].md'):
                 raise OSError('Simulated disk failure')
             write_private(path, content)
         with patch('meeting_harness.cli.write_private', side_effect=fail_second):
             with self.assertRaisesRegex(OSError, 'disk failure'):
                 write_report_pair(concise, 'Fictional concise', 'Fictional references')
         self.assertFalse(concise.exists())
-        self.assertFalse(concise.with_name('summary_with_references.md').exists())
+        self.assertFalse(concise.with_name('summary [with references].md').exists())
 
     def test_report_pair_rejects_existing_dangling_companion_symlink(self) -> None:
         concise = self.folder / 'summary.md'
-        reference = self.folder / 'summary_with_references.md'
+        reference = self.folder / 'summary [with references].md'
         target = self.folder / 'uncreated.md'
         reference.symlink_to(target)
         with self.assertRaisesRegex(HarnessError, 'already exists'):
