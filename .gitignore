@@ -1,0 +1,24 @@
+# Meeting sources and all derived artifacts belong outside the public checkout.
+private/
+material/
+materials/
+Meetings/
+outputs/
+runs/
+*.docx
+*.pdf
+*.mp3
+*.mp4
+*.wav
+*.zip
+.env
+.env.*
+*.local.toml
+*.local.json
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.DS_Store

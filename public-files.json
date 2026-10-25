@@ -1,0 +1,23 @@
+{
+  "files": [
+    ".github/workflows/check.yml",
+    ".gitignore",
+    "AGENTS.md",
+    "LICENSE",
+    "README.md",
+    "examples/2026-01-15-fictional.md",
+    "examples/fixture_model.py",
+    "meeting_harness/__init__.py",
+    "meeting_harness/__main__.py",
+    "meeting_harness/cli.py",
+    "meeting_harness/ingest.py",
+    "meeting_harness/prompts.py",
+    "meeting_harness/review.py",
+    "public-files.json",
+    "pyproject.toml",
+    "tests/test_public_audit.py",
+    "tests/test_review.py",
+    "tests/test_workflow.py",
+    "tools/audit_public.py"
+  ]
+}
