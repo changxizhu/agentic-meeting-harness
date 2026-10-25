@@ -298,20 +298,24 @@ Use the approved discussion and complete brief. Select 1–3 useful concrete age
 items only now; this limit applies to the final future agenda, never to the earlier
 analysis, reconstruction, coverage review, or complete brief. Give IDs A1, A2, ... .
 
-Prioritize future actions or discussion suggestions explicitly recorded in the
-meeting. For kind=meeting_proposal, reference the selected original N ID in
-recorded_proposal_id and preserve its actual meaning and proposer in the reason.
-Place these items before any derived items. Account for EVERY recorded N ID exactly
-once: either selected in one item or listed in deferred_recorded_proposals with a
-specific reason for deferral. Do not silently discard original suggestions.
+Prioritize suggestions explicitly made for the next meeting over optional personal
+future plans. Distinguish a participant's own planned work from a request that the
+group discuss something next time. For kind=meeting_proposal, reference the selected
+original N ID in recorded_proposal_id and preserve its actual meaning and proposer
+in the reason. Place selected recorded proposals before any derived items. Account
+for EVERY recorded N ID exactly once: either selected in one item or listed in
+deferred_recorded_proposals with a specific reason for deferral. Do not silently
+discard original suggestions, and do not invent an unrecorded group commitment.
 
-Only when all original proposals have been included and there is room may you add
-a useful kind=synthesizer_suggestion, with recorded_proposal_id=null. Clearly label
-it in the wording as the summarizer's suggestion, never as a meeting decision or
-participant commitment. Do not add derived suggestions while deferring an original
-proposal. If the meeting recorded no suggestions, derive useful follow-up topics
-from its unresolved questions or substantive discussions. Each based_on array
-must contain existing topic T IDs or unresolved U IDs that support that item.
+You may add a useful kind=synthesizer_suggestion after the selected recorded items,
+with recorded_proposal_id=null. Clearly label it in the wording as the summarizer's
+suggestion, never as a meeting decision or participant commitment, and explain why
+it is useful. Original proposals may be deferred with explicit reasons while a
+well-supported derived question is included; prioritize explicit next-meeting
+requests when making that choice. If the meeting recorded no suggestions, derive
+useful follow-up topics from its unresolved questions or substantive discussions.
+Each based_on array must contain existing topic T IDs or unresolved U IDs that
+support that item.
 
 Copy supplied discussion_sha256 and brief_sha256 exactly. Required keys are exactly
 schema_version, meeting, discussion_sha256, brief_sha256, items,

@@ -442,7 +442,6 @@ def validate_agenda(agenda: object, discussion: object, brief: object, bundle: o
                 proposals[proposal["id"]] = tid
     selected = set()
     synthetic_seen = False
-    has_synthetic = False
     for i, raw in enumerate(c.seq(root.get("items"), "agenda.items", 1, 3)):
         path = f"agenda.items[{i}]"
         item = c.obj(raw, path, {"id", "kind", "title", "reason", "based_on", "recorded_proposal_id"})
@@ -464,7 +463,7 @@ def validate_agenda(agenda: object, discussion: object, brief: object, bundle: o
                 if proposals[pid] not in refs:
                     c.errors.append(f"{path}.based_on: must include the recorded proposal's original topic")
         elif item.get("kind") == "synthesizer_suggestion":
-            synthetic_seen = has_synthetic = True
+            synthetic_seen = True
             if pid is not None:
                 c.errors.append(f"{path}.recorded_proposal_id: derived suggestion must use null")
     deferred = set()
@@ -483,8 +482,6 @@ def validate_agenda(agenda: object, discussion: object, brief: object, bundle: o
             deferred.add(pid)
     for pid in sorted(set(proposals) - selected - deferred):
         c.errors.append(f"agenda: recorded proposal {pid} must be selected or explicitly deferred")
-    if has_synthetic and deferred:
-        c.errors.append("agenda: cannot add derived suggestions while recorded proposals are deferred")
     return c.errors
 
 

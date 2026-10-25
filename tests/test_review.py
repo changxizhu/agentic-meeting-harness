@@ -331,12 +331,19 @@ class ReviewTests(unittest.TestCase):
         self.agenda["deferred_recorded_proposals"] = [{"proposal_id": "T2.N1", "reason": "Leave time for budget."}]
         self.assertEqual(validate_agenda(self.agenda, self.discussion, self.brief, self.bundle), [])
 
-    def test_cannot_defer_recorded_proposal_for_derived_suggestion(self):
-        self.agenda["items"][1].update(kind="synthesizer_suggestion", recorded_proposal_id=None)
-        self.agenda["deferred_recorded_proposals"] = [{"proposal_id": "T2.N1", "reason": "Time limit."}]
-        self.assert_error("cannot add derived suggestions", validate_agenda(self.agenda, self.discussion, self.brief, self.bundle))
+    def test_deferred_proposals_and_derived_suggestion_can_be_fully_accounted_for(self):
+        self.agenda["items"][1].update(
+            kind="synthesizer_suggestion", recorded_proposal_id=None,
+            title="Compare approaches to supervision.", based_on=["T1", "T1.U1"],
+            reason="Summarizer suggestion: this question helps address the unresolved supervision difference.")
+        self.agenda["deferred_recorded_proposals"] = [
+            {"proposal_id": "T2.N1", "reason": "Discuss the budget and supervision first; schedule a separate timing review."}]
+        self.assertEqual(validate_agenda(self.agenda, self.discussion, self.brief, self.bundle), [])
+        self.agenda["deferred_recorded_proposals"] = []
+        self.assert_error("T2.N1 must be selected or explicitly deferred",
+                          validate_agenda(self.agenda, self.discussion, self.brief, self.bundle))
 
-    def test_derived_suggestions_follow_all_recorded_proposals(self):
+    def test_derived_suggestions_follow_selected_recorded_proposals(self):
         self.agenda["items"].insert(0, {"id": "A1", "kind": "synthesizer_suggestion", "title": "Audit comparison",
                                        "reason": "Resolve the open question.", "based_on": ["T1.U1"], "recorded_proposal_id": None})
         for i, item in enumerate(self.agenda["items"], 1):
