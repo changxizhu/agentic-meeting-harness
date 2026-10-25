@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from zipfile import ZipFile
 
 from meeting_harness.cli import private_destination, write_private
@@ -528,6 +529,30 @@ class CommandWorkflowTests(unittest.TestCase):
             private_destination(PROJECT / "synthetic-generated-output" / "bundle.json")
         self.assertEqual(private_destination(PROJECT / "private" / "synthetic-run"),
                          PROJECT / "private" / "synthetic-run")
+        self.assertEqual(private_destination(PROJECT / "Meetings" / "2026-01-15" / ".harness" / "run"),
+                         PROJECT / "Meetings" / "2026-01-15" / ".harness" / "run")
+        for path in (PROJECT / "Meetings-public" / "report.md",
+                     PROJECT / "Meetings" / ".." / "meeting_harness" / "report.md"):
+            with self.subTest(path=path), self.assertRaises(HarnessError):
+                private_destination(path)
+
+    def test_meetings_symlinks_cannot_authorize_writes_to_public_code(self) -> None:
+        checkout = self.folder / "fictional-checkout"
+        code = checkout / "meeting_harness"
+        code.mkdir(parents=True)
+        (checkout / "public-files.json").write_text('{}', encoding='utf-8')
+        fake_cli = code / "cli.py"
+        fake_cli.write_text('# Fictional guard test', encoding='utf-8')
+        meetings = checkout / "Meetings"
+        with patch('meeting_harness.cli.__file__', str(fake_cli)):
+            meetings.symlink_to(code, target_is_directory=True)
+            with self.assertRaises(HarnessError):
+                private_destination(meetings / "report.md")
+            meetings.unlink()
+            meetings.mkdir()
+            (meetings / "run").symlink_to(code, target_is_directory=True)
+            with self.assertRaises(HarnessError):
+                private_destination(meetings / "run" / "report.md")
 
 
 if __name__ == "__main__":

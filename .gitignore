@@ -1,8 +1,8 @@
-# Meeting sources and all derived artifacts belong outside the public checkout.
+# Local meeting sources and derivatives stay in Meetings/ and never enter Git.
 private/
 material/
 materials/
-Meetings/
+/Meetings/
 outputs/
 runs/
 *.docx

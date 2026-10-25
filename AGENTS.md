@@ -1,8 +1,11 @@
 # Working on this project
 
-Keep all real meeting material and every derivative outside the public repository.
-Use only clearly fictional examples in tests, documentation, issues, and commits.
-Never put real participant names, quotations, transcripts, or summaries here.
+Keep all real meeting material and every derivative in the ignored local Meetings/
+folder (or outside this checkout). Group each original, finished summary, and hidden
+working records under Meetings/YYYY-MM-DD/. Never stage or publish this folder.
+Use only clearly fictional examples in public tests, documentation, issues, and
+commits. Real participant names, quotations, transcripts, and summaries must never
+enter public files or Git history.
 
 Before changing behavior, identify which stage owns it: ingestion, prompting,
 validation, rendering, or execution. Keep the runtime dependency-free unless a
@@ -21,4 +24,5 @@ next-discussion items, prioritizing recorded proposals and identifying extension
 Run `python3 -m unittest discover -s tests -v` and `python3 tools/audit_public.py`
 before publishing. Review additions to `public-files.json`; never broaden it to
 include generated artifacts or source folders. Inspect reachable history as well
-as the current files. Use private local data only outside this checkout.
+as the current files. Local Meetings/ content remains excluded even when a forced
+addition bypasses ignore rules: the publication audit must reject it.

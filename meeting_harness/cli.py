@@ -24,8 +24,11 @@ def private_destination(path: Path) -> Path:
     dest = path.resolve()
     project = Path(__file__).resolve().parent.parent
     if (project / 'public-files.json').exists() and dest.is_relative_to(project):
-        if not dest.is_relative_to(project / 'private'):
-            raise HarnessError('Keep generated artifacts outside the public project, or under its ignored private/ directory.')
+        # Compare the resolved destination with literal local-only roots. Resolving
+        # these roots themselves would trust a symlink into public code folders.
+        local_roots = (project / 'Meetings', project / 'private')
+        if not any(dest.is_relative_to(root) for root in local_roots):
+            raise HarnessError('Keep generated artifacts outside the public project, or under its ignored Meetings/ or private/ directory.')
     return dest
 
 

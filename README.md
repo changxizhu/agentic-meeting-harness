@@ -15,21 +15,27 @@ There is no global list forcing each person into one overall opinion. A comment 
 
 ## Keep one manageable local folder
 
-Only `harness/` is the public Git checkout:
+Everything is managed inside `harness/`. Its code is public; `Meetings/` is local-only and excluded from Git:
 
 ```text
-AgenticMeetings/
-  harness/                  public code, tests, fictional examples
-  Meetings/
+harness/
+  README.md                 project entry and usage
+  Meetings/                 local-only originals and results
     YYYY-MM-DD/
-      transcript.docx       private original
-      summary.md            private finished brief
-      .harness/             hidden private working files and old versions
+      transcript.docx       original meeting record
+      summary.md            final summary to read
+      .harness/             hidden review records and old versions
+  meeting_harness/          program and workflow
+  tests/                    fictional automated checks
+  examples/                 fictional trial input and adapter
+  tools/                    publication audit
 ```
 
-Run commands from `harness/`. Meeting dates come from transcript headers or filenames, never modification times. Supported inputs are `.docx`, `.md`, and `.txt`; Word tables and common timestamped speaker labels are read. Hidden folders and reserved report names `summary.md` and `digest.md` are skipped when selecting sources. Scan `../Meetings`, not its parent, which also contains public documentation. Ambiguous or undated latest selection stops; use `--source` and optionally `--meeting-date YYYY-MM-DD` to select deliberately.
+To find a result, open `Meetings/<meeting-date>/summary.md`; the corresponding original is beside it. Review records and previous versions are kept inside that same meeting's hidden `.harness/` folder. No separate sibling material or output folders are needed.
 
-Original material and all derivatives stay outside the public checkout. Never put real names, quotations, summaries, or logs into examples, tests, issues, or commits.
+Run commands from `harness/`. Meeting dates come from transcript headers or filenames, never modification times. Supported inputs are `.docx`, `.md`, and `.txt`; Word tables and common timestamped speaker labels are read. Hidden folders and reserved report names `summary.md` and `digest.md` are skipped when selecting sources. Scan `Meetings/`, not the whole project, which also contains public documentation and fictional examples. Ambiguous or undated latest selection stops; use `--source` and optionally `--meeting-date YYYY-MM-DD` to select deliberately.
+
+Real originals, finished summaries, intermediate outputs, and old versions stay under the ignored `Meetings/` tree. They must never enter Git history or the public allowlist. The output guard permits this local folder while still rejecting generated material in code, tests, and other public folders. Never put real names, quotations, summaries, or logs into public examples, tests, issues, or commits.
 
 ## Offline fictional trial
 
@@ -54,8 +60,8 @@ Replace the illustrative executable below with an adapter you have configured. T
 
 ```sh
 python3 -m meeting_harness run \
-  --meetings-dir ../Meetings \
-  --out ../Meetings/2026-01-15/.harness/run-001 \
+  --meetings-dir Meetings \
+  --out Meetings/2026-01-15/.harness/run-001 \
   --command-json '["your-model-adapter", "--json"]' \
   --language zh --attempts 2 --timeout 300
 ```
@@ -71,8 +77,8 @@ A successful run writes `discussion.json`, `coverage.json`, `brief.json`, `agend
 Prepare the source and reconstruction prompt:
 
 ```sh
-run_dir='../Meetings/2026-01-15/.harness/run-001'
-python3 -m meeting_harness prepare --meetings-dir ../Meetings --out "$run_dir"
+run_dir='Meetings/2026-01-15/.harness/run-001'
+python3 -m meeting_harness prepare --meetings-dir Meetings --out "$run_dir"
 ```
 
 Give `discussion.prompt.txt` to an assistant approved to process the source. Save its response as `discussion.json`. Then prepare the independent coverage-review prompt:
@@ -106,7 +112,7 @@ Save the response as `agenda.json`. Finally validate and render the result besid
 python3 -m meeting_harness render \
   --bundle "$run_dir/bundle.json" --discussion "$run_dir/discussion.json" \
   --coverage "$run_dir/coverage.json" --brief "$run_dir/brief.json" \
-  --agenda "$run_dir/agenda.json" --out ../Meetings/2026-01-15/summary.md
+  --agenda "$run_dir/agenda.json" --out Meetings/2026-01-15/summary.md
 ```
 
 `check` takes the same five input arguments without `--out`. Before replacing an existing visible `summary.md`, archive it under `.harness/`; rendering refuses to overwrite it. The default content language is Chinese; pass `--language en` to `run`, or to `prepare` and each subsequent `prompt` command, for English content. Section labels currently remain Chinese and source quotes retain their original language.

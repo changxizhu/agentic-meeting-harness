@@ -47,6 +47,19 @@ class PublicAuditTests(unittest.TestCase):
         self.git("add", "-f", "private/fictional.txt")
         self.assertEqual(self.audit(), 1)
 
+    def test_force_added_meeting_is_rejected_even_if_added_to_allowlist(self):
+        relative = "Meetings/2026-01-15/summary.md"
+        (self.root / ".gitignore").write_text("/Meetings/\n")
+        target = self.root / relative
+        target.parent.mkdir(parents=True)
+        target.write_text("SYNTHETIC_PRIVATE_MEETING_CANARY")
+        manifest = json.loads((self.root / "public-files.json").read_text())
+        manifest['files'].append(relative)
+        (self.root / "public-files.json").write_text(json.dumps(manifest))
+        self.git("add", "public-files.json")
+        self.git("add", "-f", relative)
+        self.assertEqual(self.audit(), 1)
+
     def test_deleted_private_file_in_history_still_rejected(self):
         (self.root / "fictional-secret.txt").write_text("SYNTHETIC_PRIVATE_CANARY")
         self.git("add", "fictional-secret.txt")
