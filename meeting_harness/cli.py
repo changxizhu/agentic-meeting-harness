@@ -10,7 +10,7 @@ import sys
 
 from .ingest import HarnessError, latest_source, make_bundle
 from .prompts import build_prompt, schema_for
-from .review import (artifact_hash, render_markdown, validate_agenda, validate_brief,
+from .review import (artifact_hash, render_concise_markdown, render_markdown, validate_agenda, validate_brief,
                      validate_bundle, validate_coverage, validate_discussion)
 
 STAGES = ('discussion', 'coverage_review', 'brief', 'agenda')
@@ -38,8 +38,36 @@ def write_private(path: Path, content: str) -> None:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as exc:
         raise HarnessError('Output already exists. Choose a new output folder or filename.') from exc
-    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-        stream.write(content)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            stream.write(content)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def write_report_pair(path: Path, concise: str, referenced: str) -> tuple[Path, Path]:
+    """Always produce both views, preserving either existing output on failure."""
+    requested = (path, path.with_name(path.stem + '_with_references.md'))
+    if path.suffix.lower() != '.md' or path.stem.lower().endswith('_with_references'):
+        raise HarnessError('Use a concise Markdown filename such as summary.md; its reference companion is created automatically.')
+    # Check literal paths too: resolving a dangling symlink must not authorize
+    # replacing it or writing to its missing target.
+    if any(item.exists() or item.is_symlink() for item in requested):
+        raise HarnessError('A report already exists. Archive both versions privately or choose a new output filename.')
+    destinations = tuple(private_destination(item) for item in requested)
+    if any(item.exists() or item.is_symlink() for item in destinations):
+        raise HarnessError('A report already exists. Archive both versions privately or choose a new output filename.')
+    created = []
+    try:
+        for target, content in zip(destinations, (concise, referenced)):
+            write_private(target, content)
+            created.append(target)
+    except Exception:
+        for target in created:
+            target.unlink(missing_ok=True)
+        raise
+    return destinations
 
 
 def load_json(path: Path) -> dict:
@@ -193,15 +221,18 @@ def run_model(args) -> None:
         agenda = runner.generate('agenda', stage_context(discussion, coverage, brief),
                                  lambda x: validate_agenda(x, discussion, brief, bundle))
         write_private(out / 'agenda.json', dump(agenda))
-        write_private(out / 'digest.md', render_markdown(discussion, coverage, brief, agenda, bundle))
+        reports = write_report_pair(out / 'summary.md',
+                                    render_concise_markdown(discussion, coverage, brief, agenda, bundle),
+                                    render_markdown(discussion, coverage, brief, agenda, bundle))
         write_private(out / 'receipt.json', dump({'schema_version': 2, 'status': 'ordered_workflow_completed',
                       'source_sha256': bundle['meeting']['source_sha256'], 'discussion_sha256': artifact_hash(discussion),
                       'topic_count': len(discussion['topics']), 'stage_order': STAGES, 'attempts': runner.records,
+                      'reports': {'concise': reports[0].name, 'with_references': reports[1].name},
                       'review_limits': 'A coverage-review pass is a model assessment, not proof of semantic completeness. Human review remains useful.'}))
     except HarnessError as exc:
         write_private(out / 'failure.json', dump({'status': 'failed', 'reason': str(exc), 'attempts': runner.records}))
         raise
-    print('Complete meeting brief created after coverage review; next-discussion proposals were generated last.')
+    print('Both reports created: summary.md (concise) and summary_with_references.md (with source references).')
 
 
 def parser():
@@ -229,7 +260,8 @@ def parser():
             p.add_argument('--stage', choices=STAGES, required=True)
             p.add_argument('--language', choices=('en', 'zh'), default='zh')
         if action in ('prompt', 'render'):
-            p.add_argument('--out', type=Path, required=True)
+            p.add_argument('--out', type=Path, required=True,
+                           help='For render: concise Markdown filename; the reference companion is always created beside it.')
     return root
 
 
@@ -251,8 +283,10 @@ def main(argv=None) -> int:
                 write_private(private_destination(args.out), content)
                 print('Prompt created after checking the required prior stages.')
             elif args.action == 'render':
-                write_private(private_destination(args.out), render_markdown(discussion, coverage, brief, agenda, bundle))
-                print('Complete, ordered meeting brief rendered.')
+                reports = write_report_pair(args.out,
+                                            render_concise_markdown(discussion, coverage, brief, agenda, bundle),
+                                            render_markdown(discussion, coverage, brief, agenda, bundle))
+                print(f'Both reports rendered: {reports[0].name} (concise) and {reports[1].name} (with source references).')
             else:
                 print('Stage order, complete source mapping, discussion links, exact evidence and agenda provenance passed structural checks.')
         return 0

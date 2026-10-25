@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 from zipfile import ZipFile
 
-from meeting_harness.cli import private_destination, write_private
+from meeting_harness.cli import private_destination, write_private, write_report_pair
 from meeting_harness.ingest import HarnessError, latest_source, make_bundle, read_paragraphs
 from meeting_harness.prompts import build_prompt, schema_for
 from meeting_harness.review import artifact_hash
@@ -104,6 +104,9 @@ class IngestionWorkflowTests(unittest.TestCase):
     def test_adjacent_reports_and_hidden_run_files_do_not_compete_with_source(self) -> None:
         newest = self.source("2026-10-21/transcript.txt", "Fictional review\nDate: 2026-10-21\nAlice: Hello.\n")
         self.source("2026-10-21/summary.md", "Summary\nMeeting date: 2026-10-21\n")
+        self.source("2026-10-21/summary_with_references.md", "References\nMeeting date: 2026-12-31\n")
+        self.source("2026-10-21/custom_with_references.md", "References without a source date.\n")
+        self.source("2026-10-21/custom.md", "Summary without a source date.\n")
         self.source("2026-10-21/.harness/prompt.txt", "Private generated prompt without a meeting date.\n")
         self.source("2026-10-21/.harness/bundle.json", "{}")
         self.assertEqual(latest_source(self.folder), newest)
@@ -248,7 +251,14 @@ class CommandWorkflowTests(unittest.TestCase):
         rendered = self.folder / "digest.md"
         result = self.cli("render", *flags, "--out", rendered)
         self.assertEqual(result.returncode, 0, result.stderr)
-        text = rendered.read_text()
+        text = rendered.with_name("digest_with_references.md").read_text()
+        concise = rendered.read_text()
+        self.assertNotIn("原文依据", concise)
+        self.assertNotIn("[E1]", concise)
+        self.assertNotIn("S0003", concise)
+        self.assertLess(len(concise), len(text))
+        for report in (rendered, rendered.with_name("digest_with_references.md")):
+            self.assertEqual(report.stat().st_mode & 0o777, 0o600)
         for required in ("完整会议讨论", "评论与回应", "讨论结果", "分歧与开放问题", "下次讨论议题", "原文依据"):
             self.assertIn(required, text)
         self.assertIn("S0003", text)
@@ -266,7 +276,10 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertEqual(receipt["stage_order"], self.stages(adapter))
         self.assertEqual(receipt["topic_count"], 2)
         self.assertIn("not proof", receipt["review_limits"])
-        self.assertTrue((out / "digest.md").exists())
+        self.assertTrue((out / "summary.md").exists())
+        self.assertTrue((out / "summary_with_references.md").exists())
+        self.assertFalse((out / "digest.md").exists())
+        self.assertEqual(receipt["reports"], {"concise": "summary.md", "with_references": "summary_with_references.md"})
         self.assertFalse((out / "failure.json").exists())
         self.assertEqual([call["segments_present"] for call in self.calls(adapter)], [True, True, True, False])
 
@@ -299,6 +312,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertFalse((out / "brief.json").exists())
         self.assertFalse((out / "agenda.json").exists())
         self.assertFalse((out / "digest.md").exists())
+        self.assertFalse((out / "summary.md").exists())
+        self.assertFalse((out / "summary_with_references.md").exists())
         self.assertTrue((out / "failure.json").exists())
 
     def test_brief_cannot_drop_a_topic_or_comment_and_is_repaired_before_agenda(self) -> None:
@@ -322,6 +337,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertEqual(self.stages(adapter), ["discussion", "discussion"])
         self.assertFalse((out / "discussion.json").exists())
         self.assertFalse((out / "digest.md").exists())
+        self.assertFalse((out / "summary.md").exists())
+        self.assertFalse((out / "summary_with_references.md").exists())
 
     def test_wrong_speaker_evidence_is_rejected_through_cli(self) -> None:
         result, out, adapter = self.run_adapter("attribution", attempts=1)
@@ -330,6 +347,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertTrue(any("speaker" in error or "Alex" in error for error in failure["attempts"][0]["errors"]))
         self.assertEqual(self.stages(adapter), ["discussion"])
         self.assertFalse((out / "digest.md").exists())
+        self.assertFalse((out / "summary.md").exists())
+        self.assertFalse((out / "summary_with_references.md").exists())
 
     def test_malformed_bundle_is_rejected_cleanly_by_check_and_render(self) -> None:
         for index, broken_segments in enumerate((None, 3, [{"id": "S0001"}])):
@@ -459,6 +478,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertIn("timed out", result.stderr)
         self.assertIn("timed out", json.loads((out / "failure.json").read_text())["reason"])
         self.assertFalse((out / "digest.md").exists())
+        self.assertFalse((out / "summary.md").exists())
+        self.assertFalse((out / "summary_with_references.md").exists())
 
     def test_nonzero_adapter_exit_preserves_private_diagnostics(self) -> None:
         result, out, _ = self.run_adapter("exit")
@@ -467,6 +488,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertIn("fictional diagnostic", (out / "01-discussion.stderr.txt").read_text())
         self.assertEqual(json.loads((out / "failure.json").read_text())["status"], "failed")
         self.assertFalse((out / "digest.md").exists())
+        self.assertFalse((out / "summary.md").exists())
+        self.assertFalse((out / "summary_with_references.md").exists())
 
     def test_prompt_limit_stops_before_model_adapter_starts(self) -> None:
         result, out, adapter = self.run_adapter("limit", extra=("--max-prompt-chars", "10"))
@@ -474,6 +497,8 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertIn("No text was truncated or sent", result.stderr)
         self.assertFalse(adapter.with_suffix(".calls.json").exists())
         self.assertFalse((out / "digest.md").exists())
+        self.assertFalse((out / "summary.md").exists())
+        self.assertFalse((out / "summary_with_references.md").exists())
 
     def test_source_size_limit_rejects_before_any_output_or_model_call(self) -> None:
         oversized = self.folder / "2026-01-15-oversized.txt"
@@ -523,6 +548,43 @@ class CommandWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(HarnessError, "already exists"):
             write_private(link, "replacement")
         self.assertEqual(target.read_text(), "Keep existing fictional text")
+
+    def test_render_existing_either_version_preserves_both_paths(self) -> None:
+        flags = self.artifact_flags()
+        for version in ('summary.md', 'summary_with_references.md'):
+            with self.subTest(existing=version):
+                folder = self.folder / version.removesuffix('.md')
+                folder.mkdir()
+                existing = folder / version
+                existing.write_text('Existing fictional report', encoding='utf-8')
+                result = self.cli('render', *flags, '--out', folder / 'summary.md')
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('already exists', result.stderr)
+                self.assertEqual(existing.read_text(), 'Existing fictional report')
+                self.assertEqual(list(folder.iterdir()), [existing])
+
+    def test_report_pair_rolls_back_first_if_second_write_fails(self) -> None:
+        concise = self.folder / 'summary.md'
+        def fail_second(path, content):
+            if path.name.endswith('_with_references.md'):
+                raise OSError('Simulated disk failure')
+            write_private(path, content)
+        with patch('meeting_harness.cli.write_private', side_effect=fail_second):
+            with self.assertRaisesRegex(OSError, 'disk failure'):
+                write_report_pair(concise, 'Fictional concise', 'Fictional references')
+        self.assertFalse(concise.exists())
+        self.assertFalse(concise.with_name('summary_with_references.md').exists())
+
+    def test_report_pair_rejects_existing_dangling_companion_symlink(self) -> None:
+        concise = self.folder / 'summary.md'
+        reference = self.folder / 'summary_with_references.md'
+        target = self.folder / 'uncreated.md'
+        reference.symlink_to(target)
+        with self.assertRaisesRegex(HarnessError, 'already exists'):
+            write_report_pair(concise, 'Fictional concise', 'Fictional references')
+        self.assertTrue(reference.is_symlink())
+        self.assertFalse(target.exists())
+        self.assertFalse(concise.exists())
 
     def test_public_project_output_is_blocked_but_ignored_private_is_allowed(self) -> None:
         with self.assertRaisesRegex(HarnessError, "outside the public project"):

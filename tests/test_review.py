@@ -4,7 +4,7 @@ import hashlib
 import json
 import unittest
 
-from meeting_harness.review import (artifact_hash, render_markdown, validate_agenda,
+from meeting_harness.review import (artifact_hash, render_concise_markdown, render_markdown, validate_agenda,
                                     validate_brief, validate_bundle, validate_coverage, validate_discussion)
 
 
@@ -381,10 +381,61 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("Bob · 提问", rendered)
         self.assertIn("A shorter question.", rendered)
 
+    def test_concise_renderer_preserves_all_content_and_reply_relationships(self):
+        rendered = render_concise_markdown(self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
+        for topic, compact in zip(self.discussion["topics"], self.brief["topics"]):
+            for text in (compact["title"], compact["presentation"], compact["outcome"]):
+                self.assertIn(text, rendered)
+            for comment in compact["discussion"]:
+                self.assertIn(comment["summary"], rendered)
+            for issue in compact["unresolved"]:
+                self.assertIn(issue["summary"], rendered)
+            for issue in topic["unresolved"]:
+                for position in issue["positions"]:
+                    self.assertIn(f"{position['speaker']}：{position['view']}", rendered)
+            for proposal in compact["recorded_next_steps"]:
+                self.assertIn(proposal["proposal"], rendered)
+        for text in ("Alice 的分享", "Bob 的分享", "Bob提问（针对Alice的分享）", "Alice回应（针对Bob的提问）",
+                     "Bob质疑（针对Alice的回应）", "局部共识（Alice、Bob）", "未解决分歧", "开放问题"):
+            self.assertIn(text, rendered)
+        # The entire reply chain shares a paragraph, retaining the original order.
+        first_chain = next(row for row in rendered.splitlines() if "Bob提问" in row)
+        self.assertLess(first_chain.index("Bob提问"), first_chain.index("Alice回应"))
+        self.assertLess(first_chain.index("Alice回应"), first_chain.index("Bob质疑"))
+        self.assertLess(rendered.index("Pilot cost and supervision"), rendered.index("Release calendar"))
+        self.assertLess(rendered.index("No date has been set."), rendered.index("## 下次讨论议题"))
+        for item in self.agenda["items"]:
+            self.assertIn(item["title"], rendered)
+            self.assertIn(item["reason"], rendered)
+
+    def test_concise_renderer_has_no_reference_or_audit_appendix(self):
+        rendered = render_concise_markdown(self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
+        for text in ("[E1]", "S0002", "T1.C1", "T1.N1", "原文依据", "覆盖检查", "排除片段", "Source SHA-256",
+                     "a" * 64, "Synthetic examples only.", "> Our pilot should track cost."):
+            self.assertNotIn(text, rendered)
+        referenced = render_markdown(self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
+        self.assertLess(len(rendered), len(referenced))
+        self.assertIn("[E1]", referenced)
+        self.assertIn("原文依据", referenced)
+
+    def test_concise_renderer_preserves_deferred_proposals_and_labels_derived_agenda(self):
+        self.agenda["items"][1].update(
+            kind="synthesizer_suggestion", recorded_proposal_id=None,
+            title="Compare supervision approaches.", based_on=["T1", "T1.U1"],
+            reason="Resolve the open supervision difference.")
+        self.agenda["deferred_recorded_proposals"] = [{"proposal_id": "T2.N1", "reason": "Budget first."}]
+        rendered = render_concise_markdown(self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
+        self.assertIn("Bob：Discuss scheduling.", rendered)
+        self.assertIn("会上已有提议：Budget", rendered)
+        self.assertIn("总结者延伸建议：Compare supervision approaches.", rendered)
+        self.assertIn("（Alice提议）", rendered)
+        self.assertIn("议题入选不代表会议已作出决定。", rendered)
+
     def test_renderer_rejects_failed_coverage(self):
         self.coverage["status"] = "revise"
-        with self.assertRaisesRegex(ValueError, "failed validation"):
-            render_markdown(self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
+        for renderer in (render_markdown, render_concise_markdown):
+            with self.subTest(renderer=renderer.__name__), self.assertRaisesRegex(ValueError, "failed validation"):
+                renderer(self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
 
     def test_markdown_and_html_source_are_escaped(self):
         malicious = "![image](https://invalid.example/x) <script>bad()</script>"
@@ -393,10 +444,12 @@ class ReviewTests(unittest.TestCase):
         self.coverage["discussion_sha256"] = artifact_hash(self.discussion)
         self.brief.update(discussion_sha256=artifact_hash(self.discussion), coverage_sha256=artifact_hash(self.coverage))
         self.agenda.update(discussion_sha256=artifact_hash(self.discussion), brief_sha256=artifact_hash(self.brief))
-        rendered = render_markdown(self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
-        self.assertNotIn("![image]", rendered)
-        self.assertNotIn("<script>", rendered)
-        self.assertIn(r"\!\[image\]", rendered)
+        for renderer in (render_markdown, render_concise_markdown):
+            with self.subTest(renderer=renderer.__name__):
+                rendered = renderer(self.discussion, self.coverage, self.brief, self.agenda, self.bundle)
+                self.assertNotIn("![image]", rendered)
+                self.assertNotIn("<script>", rendered)
+                self.assertIn(r"\!\[image\]", rendered)
 
     def test_unknown_date_is_preserved(self):
         for artifact in (self.bundle, self.discussion, self.coverage, self.brief, self.agenda):
@@ -404,7 +457,9 @@ class ReviewTests(unittest.TestCase):
         self.coverage["discussion_sha256"] = artifact_hash(self.discussion)
         self.brief.update(discussion_sha256=artifact_hash(self.discussion), coverage_sha256=artifact_hash(self.coverage))
         self.agenda.update(discussion_sha256=artifact_hash(self.discussion), brief_sha256=artifact_hash(self.brief))
-        self.assertIn("会议日期：未记录", render_markdown(self.discussion, self.coverage, self.brief, self.agenda, self.bundle))
+        for renderer in (render_markdown, render_concise_markdown):
+            with self.subTest(renderer=renderer.__name__):
+                self.assertIn("会议日期：未记录", renderer(self.discussion, self.coverage, self.brief, self.agenda, self.bundle))
 
     def test_arbitrary_malformed_inputs_fail_closed_without_raising(self):
         invalid = (None, [], False, 0, "bad", {}, {"schema_version": True})

@@ -98,6 +98,9 @@ def latest_source(folder: Path) -> Path:
     candidates = sorted(p for p in folder.rglob("*") if p.is_file()
                         and p.suffix.lower() in SUPPORTED
                         and p.name.lower() not in GENERATED_REPORT_NAMES
+                        and not p.name.lower().endswith("_with_references.md")
+                        and not (p.suffix.lower() == ".md" and
+                                 p.with_name(p.stem + "_with_references.md").is_file())
                         and not any(part.startswith(".") for part in p.relative_to(folder).parts)
                         and not p.name.startswith("~$"))
     if not candidates:

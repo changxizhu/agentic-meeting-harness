@@ -21,6 +21,21 @@ the complete brief is written. Do not impose a topic count or choose what to omi
 based on the future agenda. Only after the brief is complete, select one to three
 next-discussion items, prioritizing recorded proposals and identifying extensions.
 
+Every completed meeting must produce both reports together: summary.md is the
+concise report without reference markers or a source appendix;
+summary_with_references.md is the detailed report with evidence and quotations.
+Both use the same reviewed discussion, brief, and final agenda. Preserve every
+topic in order, essential comments and replies, individual attribution, outcomes,
+and unresolved questions in both versions. Shorten wording and layout; never
+reduce topic coverage to make the concise version shorter. Keep the four model
+stages unchanged. One to three still limits only the final next-discussion agenda.
+
+The run command writes both reports into its output folder. The render command's
+output path names the concise report and adds a sibling with _with_references
+before .md. Check both destinations before writing either report. Never overwrite
+an existing file; privately archive both reports before regenerating at the same
+paths. Exclude generated reports from automatic meeting-source selection.
+
 Run `python3 -m unittest discover -s tests -v` and `python3 tools/audit_public.py`
 before publishing. Review additions to `public-files.json`; never broaden it to
 include generated artifacts or source folders. Inspect reachable history as well

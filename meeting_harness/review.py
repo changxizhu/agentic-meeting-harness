@@ -579,3 +579,74 @@ def render_markdown(discussion: dict, coverage: dict, brief: dict, agenda: dict,
             rows.append(f"- {', '.join(item['segment_ids'])} · {item['reason']}：{line(item['note'])}")
     rows.extend(["", f"Source SHA-256: `{discussion['meeting']['source_sha256']}`", ""])
     return "\n".join(rows)
+
+
+def render_concise_markdown(discussion: dict, coverage: dict, brief: dict, agenda: dict, bundle: dict) -> str:
+    """Render the same approved content compactly, without source references.
+
+    Shortening changes the presentation rather than selecting fewer topics or
+    replies. All brief entries, original attributions and unresolved positions
+    remain visible; quotations and the source-review appendix belong only in the
+    companion reference edition.
+    """
+    errors = validate_brief(brief, discussion, coverage, bundle)
+    errors.extend(validate_agenda(agenda, discussion, brief, bundle))
+    if errors:
+        raise ValueError("Artifacts failed validation:\n" + "\n".join(errors))
+
+    def line(value):
+        return " ".join(_md(value).splitlines())
+
+    def speaker(value):
+        return line(value or "未标注发言人")
+
+    kinds = {"question": "提问", "suggestion": "建议", "challenge": "质疑", "support": "支持", "clarification": "澄清", "addition": "补充", "response": "回应"}
+    statuses = {"agreement": "形成共识", "partial_agreement": "局部共识", "answered": "问题得到回应", "open": "仍待讨论", "no_conclusion": "未形成结论"}
+    topics = {item["id"]: item for item in discussion["topics"]}
+    briefs = {item["id"]: item for item in brief["topics"]}
+    proposals = {item["id"]: item for topic in discussion["topics"] for item in topic["recorded_next_steps"]}
+    rows = [f"# {line(discussion['meeting']['title'])}（精简版）", "",
+            f"会议日期：{discussion['meeting']['date'] or '未记录'}", ""]
+    for round_item in discussion["rounds"]:
+        rows.extend([f"## {speaker(round_item['presenter'])} 的分享", ""])
+        for tid in round_item["topic_ids"]:
+            topic, short = topics[tid], briefs[tid]
+            rows.extend([f"### {line(short['title'])}", "",
+                         f"**{speaker(topic['presenter'])}分享：** {line(short['presentation'])}", ""])
+            comments = {item["id"]: item for item in topic["discussion"]}
+            chain = []
+            for original, compact in zip(topic["discussion"], short["discussion"]):
+                if original["reply_to"] == "presentation":
+                    # Start a new paragraph when a participant returns to the
+                    # presentation, retaining every branch in source order.
+                    if chain:
+                        rows.extend([" ".join(chain), ""])
+                        chain = []
+                    target = speaker(topic["presenter"]) + "的分享"
+                else:
+                    replied = comments[original["reply_to"]]
+                    target = speaker(replied["speaker"]) + "的" + kinds[replied["kind"]]
+                chain.append(f"**{speaker(original['speaker'])}{kinds[original['kind']]}（针对{target}）：** {line(compact['summary'])}")
+            if chain:
+                rows.extend([" ".join(chain), ""])
+            if not topic["discussion"]:
+                rows.extend(["未记录针对本话题的评论。", ""])
+            outcome = topic["outcome"]
+            participants = "（" + "、".join(speaker(name) for name in outcome["participants"]) + "）" if outcome["participants"] else ""
+            rows.extend([f"**{statuses[outcome['status']]}{participants}：** {line(short['outcome'])}", ""])
+            for original, compact in zip(topic["unresolved"], short["unresolved"]):
+                kind = "未解决分歧" if original["kind"] == "disagreement" else "开放问题"
+                positions = " ".join(f"{speaker(item['speaker'])}：{line(item['view'])}" for item in original["positions"])
+                rows.extend([f"**{kind}：** {line(compact['summary'])}" + (f" {positions}" if positions else ""), ""])
+            if topic["recorded_next_steps"]:
+                recorded = " ".join(f"{speaker(original['proposer'])}：{line(compact['proposal'])}"
+                                     for original, compact in zip(topic["recorded_next_steps"], short["recorded_next_steps"]))
+                rows.extend(["**会上后续建议：** " + recorded, ""])
+    rows.extend(["## 下次讨论议题", "", "议题入选不代表会议已作出决定。", ""])
+    for item in agenda["items"]:
+        label = "会上已有提议" if item["kind"] == "meeting_proposal" else "总结者延伸建议"
+        original = proposals.get(item["recorded_proposal_id"])
+        attribution = f"（{speaker(original['proposer'])}提议）" if original else ""
+        rows.append(f"- **{label}：{line(item['title'])}** {line(item['reason'])}{attribution}")
+    rows.append("")
+    return "\n".join(rows)
