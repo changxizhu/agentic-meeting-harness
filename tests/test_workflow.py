@@ -274,6 +274,24 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertTrue(any("not 'Alice'" in error for error in failure["attempts"][0]["errors"]))
         self.assertFalse((out / "digest.md").exists())
 
+    def test_malformed_bundle_is_rejected_cleanly_by_check_and_render(self) -> None:
+        summary = self.json_file("summary.json", self.summary)
+        for index, broken_segments in enumerate((None, 3, [{"id": "S0001"}])):
+            with self.subTest(segments=broken_segments):
+                broken = deepcopy(self.bundle)
+                broken["segments"] = broken_segments
+                bundle_path = self.json_file(f"broken-bundle-{index}.json", broken)
+                checked = self.cli("check", "--bundle", bundle_path, "--summary", summary)
+                self.assertEqual(checked.returncode, 2)
+                self.assertIn("bundle.segments", checked.stderr)
+                self.assertNotIn("Traceback", checked.stderr)
+                destination = self.folder / f"broken-digest-{index}.md"
+                rendered = self.cli("render", "--bundle", bundle_path, "--summary", summary,
+                                    "--out", destination)
+                self.assertEqual(rendered.returncode, 2)
+                self.assertNotIn("Traceback", rendered.stderr)
+                self.assertFalse(destination.exists())
+
     def test_timeout_records_failure_without_final_digest(self) -> None:
         result, out, _ = self.run_adapter("timeout", extra=("--timeout", "1"))
         self.assertEqual(result.returncode, 2)
